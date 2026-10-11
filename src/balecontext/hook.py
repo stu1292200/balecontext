@@ -175,8 +175,8 @@ def _outline(block: str) -> str:
         depth = max(0, depth + sum(bare.count(c) for c in "([{") - sum(bare.count(c) for c in ")]}"))
         if position == 0 or "[docstring" in code or "[parameters" in code or (not inside and FLOW.match(code)) or re.search(r"\w\(", code):
             out.append(line)
-    first, last = re.match(r"=== \S+:(\d+)-(\d+)", lines[0]).groups()
-    out.append(f"[Outline of lines {first}-{last}: lines without a call, branch or return are left out.]")
+    span = re.match(r"=== .*?:(\d+-\d+) ", lines[0])
+    out.append(f"[Outline of lines {span.group(1) if span else 'above'}: lines without a call, branch or return are left out.]")
     return "\n".join(out)
 
 
