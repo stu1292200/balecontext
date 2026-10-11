@@ -471,6 +471,7 @@ def context(project: Project, query: str, budget: int = 3000, session: dict | No
         outward_limit = 2 * OUTWARD_LIMIT if wide else OUTWARD_LIMIT
         followed = 0
         deferred: list[dict] = []
+        helper_ids: set[str] = set()
         for source, (item, role) in reach:
             if item["id"] in planned_ids or item["id"] in {e["id"] for e, _ in elsewhere + aside}:
                 continue
@@ -485,16 +486,25 @@ def context(project: Project, query: str, budget: int = 3000, session: dict | No
                 elif wide:
                     deferred.append(item)
                 else:
+                    before = set(planned_ids)
                     walk(item, 2)
+                    helper_ids |= planned_ids - before
             else:
                 elsewhere.append((item, role))
         # A large pack (the hook's saved file) shows every followed call before the helpers of any
         # one of them, so a trace keeps its breadth (Session.send's hooks, cookies and redirects).
-        helper_ids: set[str] = set()
         for item in deferred:
             before = set(planned_ids)
             walk(item, 2)
             helper_ids |= planned_ids - before
+        # Helpers the question does not name come last, after every call it does name: the chain's
+        # deep helpers (three or more calls from the entry) and the helpers of calls followed
+        # elsewhere (`resolve_redirects` before `cert_verify` and proxy-bypass internals).
+        chain_set = {item["id"] for item in main_chain}
+        deep = [pair for pair in planned if not named_like_question(pair[0]) and (
+            pair[0]["id"] in helper_ids or pair[0]["id"] in chain_set and depth_of.get(pair[0]["id"], 0) >= 3)]
+        if deep:
+            planned = [pair for pair in planned if pair not in deep] + deep
         related_items: list[tuple[dict, str]] = []
         if seeds:
             entry = seeds[0][1]

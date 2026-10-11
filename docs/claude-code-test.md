@@ -15,8 +15,10 @@ balecontext install claude --hook     # adds .mcp.json, a short CLAUDE.md block 
 `--hook` adds a Claude Code prompt hook to `.claude/settings.json`. When your
 message names code in the project, BaleContext hands Claude the evidence before
 its first turn, so a well-covered question can be answered without any search.
-Messages that name no project code get nothing added. Each prompt is logged
-(time and size only) in `.balecontext/hook-log.jsonl`.
+Messages that name no project code get nothing added. Within one conversation,
+source already sent for an earlier message is named rather than sent again; the
+hook forgets that when Claude Code compacts the conversation. Each prompt is
+logged (time and size only) in `.balecontext/hook-log.jsonl`.
 
 Restart Claude Code in that folder, approve the `balecontext` server when asked,
 and run `/mcp`: it should list five BaleContext tools.
@@ -73,6 +75,21 @@ py benchmarks\claude_pair.py C:\path\to\requests-test --question-file benchmarks
 
 Offline, the hook sends a COMPLETE pack for the Express question and a PARTIAL
 one for the requests trace, which touches more of the library than fits.
+
+### Two questions in one conversation
+
+People usually ask several questions in one Claude Code conversation. With
+`--followup-file`, each task asks a second question in the same conversation
+(`claude -p --resume`), and the totals cover both questions; `summary.json` also
+gives the second question alone (`median_followup_tokens`, `followup_*_saving_percent`).
+The hook remembers, per conversation, which source it already sent and names it
+instead of sending it again, until Claude Code compacts the conversation.
+
+```
+py benchmarks\claude_pair.py C:\path\to\requests-test --question-file benchmarks\questions\requests-session-request.txt --followup-file benchmarks\questions\requests-session-send-followup.txt --runs 3
+```
+
+Each answer to the second question is saved as `runN-<arm>.followup.answer.md`.
 
 The results folder contains your local paths, so it is ignored by git; share
 `summary.json` and the answers by hand.

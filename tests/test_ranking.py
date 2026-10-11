@@ -365,13 +365,30 @@ class HookTest(unittest.TestCase):
         target.parent.mkdir(parents=True)
         target.write_text(FORMS, encoding="utf-8")
 
-    def run_hook(self, prompt: str, cwd: Path) -> str:
+    def run_hook(self, prompt: str, cwd: Path, **event) -> str:
         import io
         import json
         from balecontext.hook import run_claude
         output = io.StringIO()
-        self.assertEqual(run_claude(io.StringIO(json.dumps({"prompt": prompt, "cwd": str(cwd)})), output), 0)
+        self.assertEqual(run_claude(io.StringIO(json.dumps({"prompt": prompt, "cwd": str(cwd), **event})), output), 0)
         return output.getvalue()
+
+    def test_follow_up_prompt_names_source_already_sent_until_compaction(self):
+        import json
+        Project(self.root).index()
+        def context(**event):
+            return json.loads(self.run_hook(PROSE, self.root, **event))["hookSpecificOutput"]["additionalContext"]
+        first = context(session_id="conversation-1", hook_event_name="UserPromptSubmit")
+        self.assertIn("def is_valid", first)
+        again = context(session_id="conversation-1", hook_event_name="UserPromptSubmit")
+        self.assertNotIn("def is_valid", again)
+        self.assertRegex(again, r"(?m)^ALREADY SENT: BaseForm.is_valid django/forms/forms.py:\d+-\d+; BaseForm.errors ")
+        self.assertIn("re-read those lines only if they are no longer in your context", again)
+        self.assertLess(len(again), len(first) * 0.7)
+        # Another conversation, and the same one after compaction, get the source again.
+        self.assertIn("def is_valid", context(session_id="conversation-2", hook_event_name="UserPromptSubmit"))
+        self.assertEqual(self.run_hook("", self.root, session_id="conversation-1", hook_event_name="PreCompact"), "")
+        self.assertIn("def is_valid", context(session_id="conversation-1", hook_event_name="UserPromptSubmit"))
 
     def test_unindexed_folder_is_never_indexed_by_the_hook(self):
         self.assertEqual(self.run_hook(PROSE, self.root), "")
@@ -452,8 +469,9 @@ class HookTest(unittest.TestCase):
         self.assertNotIn(".claude/settings.json", second["changed"])
         data = json.loads(settings.read_text(encoding="utf-8"))
         self.assertEqual(data["permissions"], {"allow": ["Read"]})
-        self.assertEqual(len(data["hooks"]["UserPromptSubmit"]), 1)
-        self.assertEqual(data["hooks"]["UserPromptSubmit"][0]["hooks"][0]["args"][-2:], ["hook", "claude"])
+        for event in ("UserPromptSubmit", "PreCompact"):
+            self.assertEqual(len(data["hooks"][event]), 1)
+            self.assertEqual(data["hooks"][event][0]["hooks"][0]["args"][-2:], ["hook", "claude"])
         with self.assertRaises(ValueError):
             install(project, "codex", hook=True)
         self.assertFalse((self.root / ".codex").exists())

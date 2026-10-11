@@ -50,8 +50,17 @@ def _write(path, text: str) -> None:
 
 
 def hook_settings() -> dict:
-    """Claude Code UserPromptSubmit hook, run without a shell so paths with spaces work."""
+    """Claude Code hook command, run without a shell so paths with spaces work."""
     return {"type": "command", "command": sys.executable, "args": ["-m", "balecontext", "hook", "claude"], "timeout": 30}
+
+
+# UserPromptSubmit hands the model evidence; PreCompact makes the hook forget what it sent,
+# because compaction summarises that evidence away.
+HOOK_EVENTS = ("UserPromptSubmit", "PreCompact")
+
+
+def hook_config() -> dict:
+    return {"hooks": {event: [{"hooks": [hook_settings()]}] for event in HOOK_EVENTS}}
 
 
 def _install_hook(project: Project, dry_run: bool) -> list[str]:
@@ -60,13 +69,17 @@ def _install_hook(project: Project, dry_run: bool) -> list[str]:
     settings = json.loads(original) if original.strip() else {}
     if not isinstance(settings, dict) or not isinstance(settings.get("hooks", {}), dict):
         raise ValueError(".claude/settings.json must contain an object of hooks.")
-    groups = settings.setdefault("hooks", {}).setdefault("UserPromptSubmit", [])
-    if not isinstance(groups, list):
-        raise ValueError("UserPromptSubmit hooks must be a list.")
-    present = any(isinstance(h, dict) and h.get("args", [])[-2:] == ["hook", "claude"] for g in groups if isinstance(g, dict) for h in g.get("hooks", []))
-    if present:
+    changed = False
+    for event in HOOK_EVENTS:
+        groups = settings.setdefault("hooks", {}).setdefault(event, [])
+        if not isinstance(groups, list):
+            raise ValueError(f"{event} hooks must be a list.")
+        present = any(isinstance(h, dict) and h.get("args", [])[-2:] == ["hook", "claude"] for g in groups if isinstance(g, dict) for h in g.get("hooks", []))
+        if not present:
+            groups.append({"hooks": [hook_settings()]})
+            changed = True
+    if not changed:
         return []
-    groups.append({"hooks": [hook_settings()]})
     if not dry_run:
         _write(path, json.dumps(settings, indent=2, ensure_ascii=False) + "\n")
     return [".claude/settings.json"]

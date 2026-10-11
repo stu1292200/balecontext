@@ -35,7 +35,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from balecontext.integrations import INSTRUCTIONS, hook_settings  # noqa: E402
+from balecontext.integrations import INSTRUCTIONS, hook_config  # noqa: E402
 from balecontext.store import Project  # noqa: E402
 
 READ_TOOLS = ["Read", "Grep", "Glob", "LS"]
@@ -74,12 +74,67 @@ def command(arm: str, args, mcp_config: Path, hook_config: Path | None = None) -
     return line + ["--allowedTools", *allowed]
 
 
-def run_arm(arm: str, args, question: str, mcp_config: Path, out: Path, number: int) -> dict:
+def invoke(arm: str, args, prompt: str, mcp_config: Path, out: Path, name: str, resume: str | None = None) -> tuple[dict, list[str], dict]:
+    """One `claude -p` call; returns its result event, its tool calls and its own model-call usage."""
+    line = command(arm, args, mcp_config, out / "balecontext-hook-settings.json")
+    if resume:
+        line[1:1] = ["--resume", resume]
+    completed = subprocess.run(line, input=prompt, capture_output=True, text=True, encoding="utf-8", cwd=args.checkout, timeout=args.timeout)
+    raw = completed.stdout.strip()
+    (out / f"{name}.jsonl").write_text(raw + "\n", encoding="utf-8")
+    events = []
+    for text in raw.splitlines():
+        try:
+            events.append(json.loads(text))
+        except json.JSONDecodeError:
+            continue
+    data = next((event for event in reversed(events) if event.get("type") == "result"), {})
+    # Every tool call in order, so a run explains its own turns.
+    calls = []
+    messages: dict[str, dict] = {}
+    for event in events:
+        if event.get("type") == "assistant":
+            message = event.get("message") or {}
+            if message.get("id") and isinstance(message.get("usage"), dict):
+                messages[message["id"]] = message["usage"]
+            for block in message.get("content") or []:
+                if isinstance(block, dict) and block.get("type") == "tool_use":
+                    calls.append(f"{block.get('name')} {json.dumps(block.get('input'), ensure_ascii=False)[:300]}")
+        elif event.get("type") == "user":
+            for block in (event.get("message") or {}).get("content") or []:
+                if isinstance(block, dict) and block.get("type") == "tool_result":
+                    content = block.get("content")
+                    text = content if isinstance(content, str) else json.dumps(content, ensure_ascii=False)
+                    calls.append(f"  -> result {len(text):,} chars" + (" (COVERAGE: " + text.split("COVERAGE: ", 1)[1][:8].split(".")[0] + ")" if "COVERAGE: " in text else ""))
+    if not data or completed.returncode != 0 and not data.get("usage"):
+        (out / f"{name}.stderr.txt").write_text(completed.stderr, encoding="utf-8")
+        raise SystemExit(f"{name} failed; see {out}. First error line: {(completed.stderr or raw).strip()[:300]}")
+    own = {field: sum(int(usage.get(field) or 0) for usage in messages.values()) for field in USAGE_FIELDS}
+    (out / f"{name}.answer.md").write_text(str(data.get("result", "")), encoding="utf-8")
+    return data, calls, own
+
+
+def run_arm(arm: str, args, question: str, mcp_config: Path, out: Path, number: int, followup: str | None = None) -> dict:
     started = time.monotonic()
     hook_log = args.checkout / ".balecontext" / "hook-log.jsonl"
     hook_lines = len(hook_log.read_text(encoding="utf-8").splitlines()) if hook_log.exists() else 0
-    completed = subprocess.run(command(arm, args, mcp_config, out / "balecontext-hook-settings.json"), input=question, capture_output=True, text=True,
-                               encoding="utf-8", cwd=args.checkout, timeout=args.timeout)
+    data, calls, _ = invoke(arm, args, question, mcp_config, out, f"run{number}-{arm}")
+    usage = {field: int((data.get("usage") or {}).get(field) or 0) for field in USAGE_FIELDS}
+    cost, turns = data.get("total_cost_usd"), data.get("num_turns")
+    first = {"tokens": sum(usage.values()), "cost": cost}
+    if followup:
+        # A second question in the same conversation (`--resume`), as people use Claude Code.
+        later, later_calls, own = invoke(arm, args, followup, mcp_config, out, f"run{number}-{arm}.followup", resume=data.get("session_id"))
+        calls += ["--- follow-up question ---"] + later_calls
+        reported = {field: int((later.get("usage") or {}).get(field) or 0) for field in USAGE_FIELDS}
+        # Claude Code documents a resumed run's totals as the whole conversation's; check against
+        # the follow-up's own model calls rather than assume it.
+        cumulative = abs(sum(reported.values()) - sum(usage.values()) - sum(own.values())) < abs(sum(reported.values()) - sum(own.values()))
+        usage = reported if cumulative else {field: usage[field] + reported[field] for field in USAGE_FIELDS}
+        later_cost = later.get("total_cost_usd")
+        if isinstance(cost, (int, float)) and isinstance(later_cost, (int, float)):
+            cost = later_cost if cumulative else cost + later_cost
+        turns = later.get("num_turns") if cumulative else (turns or 0) + (later.get("num_turns") or 0)
     seconds = round(time.monotonic() - started, 1)
     hook_ran = None
     if arm == "hook":
@@ -89,45 +144,22 @@ def run_arm(arm: str, args, question: str, mcp_config: Path, out: Path, number: 
             print("  WARNING: the prompt hook did not run in this Claude Code version; this arm equals 'without'.")
         elif not any(json.loads(line).get("context_chars") for line in new_lines):
             print("  Note: the hook ran but found nothing to add for this question.")
-    raw = completed.stdout.strip()
-    (out / f"run{number}-{arm}.jsonl").write_text(raw + "\n", encoding="utf-8")
-    events = []
-    for line in raw.splitlines():
-        try:
-            events.append(json.loads(line))
-        except json.JSONDecodeError:
-            continue
-    data = next((event for event in reversed(events) if event.get("type") == "result"), {})
-    # Every tool call in order, so a run explains its own turns.
-    calls = []
-    for event in events:
-        if event.get("type") == "assistant":
-            for block in (event.get("message") or {}).get("content") or []:
-                if isinstance(block, dict) and block.get("type") == "tool_use":
-                    calls.append(f"{block.get('name')} {json.dumps(block.get('input'), ensure_ascii=False)[:300]}")
-        elif event.get("type") == "user":
-            for block in (event.get("message") or {}).get("content") or []:
-                if isinstance(block, dict) and block.get("type") == "tool_result":
-                    content = block.get("content")
-                    text = content if isinstance(content, str) else json.dumps(content, ensure_ascii=False)
-                    calls.append(f"  -> result {len(text):,} chars" + (" (COVERAGE: " + text.split("COVERAGE: ", 1)[1][:8].split(".")[0] + ")" if "COVERAGE: " in text else ""))
     (out / f"run{number}-{arm}.tools.txt").write_text("\n".join(calls) + "\n", encoding="utf-8")
-    if not data or completed.returncode != 0 and not data.get("usage"):
-        (out / f"run{number}-{arm}.stderr.txt").write_text(completed.stderr, encoding="utf-8")
-        raise SystemExit(f"Run {number} ({arm}) failed; see {out}. First error line: {(completed.stderr or raw).strip()[:300]}")
-    usage = data.get("usage") or {}
-    row = {field: int(usage.get(field) or 0) for field in USAGE_FIELDS}
+    row = dict(usage)
     row.update({
         "arm": arm, "run": number,
-        "total_tokens": sum(row[field] for field in USAGE_FIELDS),
-        "cost_usd_estimate": data.get("total_cost_usd"),
-        "turns": data.get("num_turns"),
+        "total_tokens": sum(usage[field] for field in USAGE_FIELDS),
+        "cost_usd_estimate": cost,
+        "turns": turns,
         "seconds": seconds,
         "hook_ran": hook_ran,
-        "tool_calls": sum(not c.startswith("  ->") for c in calls),
+        "tool_calls": sum(not c.startswith(("  ->", "---")) for c in calls),
         "error": data.get("is_error", False) or data.get("subtype") not in (None, "success"),
     })
-    (out / f"run{number}-{arm}.answer.md").write_text(str(data.get("result", "")), encoding="utf-8")
+    if followup:
+        row["first_question"] = first
+        row["followup_tokens"] = row["total_tokens"] - first["tokens"]
+        row["followup_cost_usd_estimate"] = cost - first["cost"] if isinstance(cost, (int, float)) and isinstance(first["cost"], (int, float)) else None
     return row
 
 
@@ -141,6 +173,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--timeout", type=int, default=1200, help="Seconds per run")
     parser.add_argument("--arms", default="without,hook", help="Comma-separated arms: without, with, hook (default without,hook)")
     parser.add_argument("--same-prompt", action="store_true", help="Send the identical prompt every time (lets later runs reuse earlier runs' cache)")
+    parser.add_argument("--followup-file", type=Path, help="A second question asked in the same conversation; totals then cover both questions")
     parser.add_argument("--out", type=Path, help="Results folder (default: claude-pair-results/<time> next to this script)")
     args = parser.parse_args(argv)
     args.checkout = args.checkout.resolve()
@@ -150,6 +183,9 @@ def main(argv: list[str] | None = None) -> int:
     question = args.question_file.read_text(encoding="utf-8").strip()
     if not question:
         raise SystemExit("The question file is empty.")
+    followup = args.followup_file.read_text(encoding="utf-8").strip() if args.followup_file else None
+    if args.followup_file and not followup:
+        raise SystemExit("The follow-up question file is empty.")
     refuse_contaminated(args.checkout)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     out = (args.out or Path(__file__).resolve().parent / "claude-pair-results" / stamp).resolve()
@@ -159,8 +195,8 @@ def main(argv: list[str] | None = None) -> int:
     mcp_config = out / "balecontext-mcp.json"
     mcp_config.write_text(json.dumps({"mcpServers": {"balecontext": {
         "command": sys.executable, "args": ["-m", "balecontext", "mcp", "--root", str(args.checkout)]}}}, indent=2), encoding="utf-8")
-    (out / "balecontext-hook-settings.json").write_text(json.dumps({"hooks": {"UserPromptSubmit": [{"hooks": [hook_settings()]}]}}, indent=2), encoding="utf-8")
-    (out / "question.txt").write_text(question + "\n", encoding="utf-8")
+    (out / "balecontext-hook-settings.json").write_text(json.dumps(hook_config(), indent=2), encoding="utf-8")
+    (out / "question.txt").write_text(question + "\n" + (f"\nFollow-up:\n{followup}\n" if followup else ""), encoding="utf-8")
     rows = []
     for number in range(1, args.runs + 1):
         shift = (number - 1) % len(arms)
@@ -168,8 +204,11 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Run {number}: {arm}...")
             # A number BaleContext's query parser ignores; it only stops cross-task cache reuse.
             prompt = question if args.same_prompt else f"{question}\n\n#{random.randrange(10**5, 10**6)}"
-            rows.append(run_arm(arm, args, prompt, mcp_config, out, number))
-            print(f"  {rows[-1]['total_tokens']:,} tokens, {rows[-1]['turns']} turns, {rows[-1]['seconds']}s")
+            later = followup if args.same_prompt or not followup else f"{followup}\n\n#{random.randrange(10**5, 10**6)}"
+            rows.append(run_arm(arm, args, prompt, mcp_config, out, number, later))
+            row = rows[-1]
+            print(f"  {row['total_tokens']:,} tokens, {row['turns']} turns, {row['seconds']}s"
+                  + (f" (follow-up alone: {row['followup_tokens']:,} tokens)" if followup else ""))
     summary = {}
     for arm in arms:
         mine = [row for row in rows if row["arm"] == arm]
@@ -180,6 +219,10 @@ def main(argv: list[str] | None = None) -> int:
             "median_turns": statistics.median(row["turns"] for row in mine) if all(isinstance(row["turns"], int) for row in mine) else None,
             "errors": sum(bool(row["error"]) for row in mine),
         }
+        if followup:
+            later = [row["followup_cost_usd_estimate"] for row in mine if isinstance(row.get("followup_cost_usd_estimate"), (int, float))]
+            summary[arm]["median_followup_tokens"] = statistics.median(row["followup_tokens"] for row in mine)
+            summary[arm]["median_followup_cost_usd_estimate"] = statistics.median(later) if later else None
     base = summary["without"]
     for arm in arms:
         if arm == "without":
@@ -188,7 +231,11 @@ def main(argv: list[str] | None = None) -> int:
         assisted["token_saving_percent"] = round(100 * (1 - assisted["median_total_tokens"] / base["median_total_tokens"]), 1) if base["median_total_tokens"] else None
         if base["median_cost_usd_estimate"] and assisted["median_cost_usd_estimate"] is not None:
             assisted["cost_saving_percent"] = round(100 * (1 - assisted["median_cost_usd_estimate"] / base["median_cost_usd_estimate"]), 1)
-    summary["note"] = ("Whole-task totals from Claude Code's JSON result. Cost is Claude Code's own estimate, the closest "
+        if followup and base.get("median_followup_tokens"):
+            assisted["followup_token_saving_percent"] = round(100 * (1 - assisted["median_followup_tokens"] / base["median_followup_tokens"]), 1)
+            if base.get("median_followup_cost_usd_estimate") and assisted.get("median_followup_cost_usd_estimate") is not None:
+                assisted["followup_cost_saving_percent"] = round(100 * (1 - assisted["median_followup_cost_usd_estimate"] / base["median_followup_cost_usd_estimate"]), 1)
+    summary["note"] = ("Whole-task totals from Claude Code's JSON result" + (", both questions together; 'followup' figures are the second question alone" if followup else "") + ". Cost is Claude Code's own estimate, the closest "
                        "proxy for plan limits. Judge answer quality by reading the saved answers; savings mean nothing "
                        "if the BaleContext answers are worse.")
     (out / "summary.json").write_text(json.dumps({"summary": summary, "rows": rows}, indent=2), encoding="utf-8")

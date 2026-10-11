@@ -53,6 +53,16 @@
   a definition cut short in the pack continues from where it stopped instead of repeating.
   Blank lines are dropped from all hook text (line numbers stay exact). The requests trace
   file drops from about 34,000 to 21,000 characters.
+- The hook remembers, per Claude Code conversation, which source it already sent and
+  names it on one `ALREADY SENT:` line instead of sending it again (an edited file is sent
+  again). The installer also adds the hook for `PreCompact`, which clears that memory,
+  because compaction summarises the evidence away. On a requests follow-up question the
+  saved file drops from about 19,000 to 9,600 characters.
+- Helpers the question does not name (the chain's own deep helpers and the helpers of calls
+  followed elsewhere) come after every call it does name, so a question about redirects
+  gets `resolve_redirects` before proxy-bypass internals.
+- `benchmarks/claude_pair.py --followup-file`: a second question in the same conversation,
+  with totals for both questions and for the second one alone.
 - Calling a class follows its constructor (`Request(...)` → `Request.__init__`); a class
   without one is left out instead of showing its header. Parameter lists of eight or more
   lines collapse to one line naming the parameters.
