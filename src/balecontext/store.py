@@ -9,9 +9,9 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from .extract import extract, resolve
-from .files import discover
+from .files import scan
 
-SCHEMA = 2
+SCHEMA = 3
 
 
 class Project:
@@ -45,7 +45,8 @@ class Project:
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS files (
                     path TEXT PRIMARY KEY, hash TEXT NOT NULL, parser TEXT NOT NULL,
-                    content TEXT NOT NULL, warnings TEXT NOT NULL);
+                    content TEXT NOT NULL, warnings TEXT NOT NULL,
+                    size INTEGER, mtime_ns INTEGER, seen_ns INTEGER);
                 CREATE TABLE IF NOT EXISTS nodes (
                     id TEXT PRIMARY KEY, path TEXT NOT NULL, name TEXT NOT NULL, kind TEXT NOT NULL,
                     start INTEGER NOT NULL, end INTEGER NOT NULL, snippet TEXT NOT NULL);
@@ -68,18 +69,26 @@ class Project:
 
     def index(self) -> dict:
         started = time.monotonic()
-        contents, skipped = discover(self.root)
+        with self.connect() as db:
+            known = {row["path"]: (row["size"], row["mtime_ns"], row["seen_ns"]) for row in db.execute("SELECT path, size, mtime_ns, seen_ns FROM files WHERE size IS NOT NULL")}
+        # Unchanged files (same size and mtime, read safely after the mtime) are not reopened.
+        contents, unchanged, file_stats, skipped = scan(self.root, known)
         with self.connect() as db:
             with db:
                 db.execute("BEGIN IMMEDIATE")
                 previous = {row["path"]: row["hash"] for row in db.execute("SELECT path, hash FROM files")}
+                unchanged = {p for p in unchanged if p in previous}
                 hashes = {p: hashlib.sha256(t.encode("utf-8")).hexdigest() for p, t in contents.items()}
+                hashes.update({p: previous[p] for p in unchanged})
                 # Installing an optional parser upgrades existing text indexes on next refresh.
                 import importlib.util
                 has_js = all(importlib.util.find_spec(m) is not None for m in ("tree_sitter", "tree_sitter_javascript", "tree_sitter_typescript"))
                 upgrades = {r[0] for r in db.execute("SELECT path FROM files WHERE parser='text-chunks'") if has_js and r[0].endswith((".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx"))}
                 changed = [p for p, digest in hashes.items() if previous.get(p) != digest or p in upgrades]
-                removed = sorted(set(previous) - set(contents))
+                for path in changed:
+                    if path not in contents:
+                        contents[path] = db.execute("SELECT content FROM files WHERE path=?", (path,)).fetchone()[0]
+                removed = sorted(set(previous) - set(hashes))
                 for path in changed + removed:
                     db.execute("DELETE FROM search WHERE id IN (SELECT id FROM nodes WHERE path=?)", (path,))
                     db.execute("DELETE FROM nodes WHERE path=?", (path,))
@@ -87,7 +96,8 @@ class Project:
                     db.execute("DELETE FROM files WHERE path=?", (path,))
                 for path in changed:
                     result = extract(path, contents[path])
-                    db.execute("INSERT INTO files VALUES (?, ?, ?, ?, ?)", (path, hashes[path], result.parser, contents[path], json.dumps(result.warnings)))
+                    size, mtime_ns, seen_ns = file_stats.get(path, (None, None, None))
+                    db.execute("INSERT INTO files VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (path, hashes[path], result.parser, contents[path], json.dumps(result.warnings), size, mtime_ns, seen_ns))
                     for node in result.nodes:
                         db.execute("INSERT INTO nodes VALUES (?, ?, ?, ?, ?, ?, ?)", (node.id, node.path, node.name, node.kind, node.start, node.end, node.snippet))
                         db.execute("INSERT INTO search VALUES (?, ?, ?, ?)", (node.id, node.name, node.path, node.snippet))
@@ -110,12 +120,14 @@ class Project:
                             edges.append({"source": parent["id"], "target": node["id"], "relation": "contains" if node["kind"] == "chunk" else "defines", "evidence": "EXTRACTED"})
                     db.execute("DELETE FROM edges")
                     db.executemany("INSERT OR IGNORE INTO edges VALUES (?, ?, ?, ?, ?)", [(e["source"], e["target"], e["relation"], e["evidence"], e.get("line")) for e in edges])
+                # Re-read but identical files (touched, checked out) only refresh their stat record.
+                db.executemany("UPDATE files SET size=?, mtime_ns=?, seen_ns=? WHERE path=?", [(*file_stats[p], p) for p in contents if p not in changed and p in file_stats])
                 if changed or removed or not db.execute("SELECT 1 FROM metadata WHERE key='generation'").fetchone():
                     db.execute("INSERT OR REPLACE INTO metadata VALUES ('generation', ?)", (str(time.time_ns()),))
                 db.execute("INSERT OR REPLACE INTO metadata VALUES ('last_index', ?)", (str(time.time()),))
                 db.execute("INSERT OR REPLACE INTO metadata VALUES ('skipped', ?)", (json.dumps(skipped),))
             stats = self._stats(db)
-        return {**stats, "changed": len(changed), "removed": len(removed), "unchanged": len(contents) - len(changed), "elapsed_ms": round((time.monotonic() - started) * 1000)}
+        return {**stats, "changed": len(changed), "removed": len(removed), "unchanged": len(hashes) - len(changed), "elapsed_ms": round((time.monotonic() - started) * 1000)}
 
     def _stats(self, db) -> dict:
         return {

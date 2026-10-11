@@ -53,6 +53,34 @@ class WorkspaceTest(unittest.TestCase):
         with self.project.connect() as db:
             self.assertEqual(db.execute("SELECT count(*) FROM refs WHERE path='src/shop/api.py'").fetchone()[0], 0)
 
+    def test_unchanged_files_are_not_reread(self):
+        from unittest import mock
+        self.fixture()
+        old = 1_600_000_000
+        for path in self.root.rglob("*"):
+            if path.is_file():
+                os.utime(path, (old, old))
+        self.assertEqual(self.project.index()["changed"], 3)
+        with mock.patch("pathlib.Path.read_bytes", side_effect=AssertionError("unchanged file was reread")):
+            result = self.project.index()
+        self.assertEqual((result["changed"], result["removed"], result["unchanged"]), (0, 0, 3))
+        self.write("src/shop/auth.py", "def authorize(token):\n    return bool(token)\n")
+        self.assertEqual(self.project.index()["changed"], 1)
+
+    def test_old_schema_is_rebuilt_and_notes_are_kept(self):
+        import sqlite3
+        self.fixture()
+        (self.root / ".balecontext").mkdir()
+        db = sqlite3.connect(self.root / ".balecontext" / "index.sqlite3")
+        db.executescript("CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL); INSERT INTO metadata VALUES ('schema', '1');"
+                         "CREATE TABLE files (path TEXT PRIMARY KEY, hash TEXT NOT NULL, parser TEXT NOT NULL, content TEXT NOT NULL, warnings TEXT NOT NULL);"
+                         "CREATE TABLE memories (id INTEGER PRIMARY KEY, text TEXT NOT NULL, citations TEXT NOT NULL, created REAL NOT NULL);"
+                         "INSERT INTO memories VALUES (1, 'kept', '{}', 0);")
+        db.close()
+        self.assertEqual(self.project.index()["changed"], 3)
+        with self.project.connect() as connection:
+            self.assertEqual(connection.execute("SELECT text FROM memories").fetchone()[0], "kept")
+
     def test_relative_import_and_call_have_provenance(self):
         self.fixture()
         graph = self.project.graph()
@@ -253,7 +281,7 @@ class WorkspaceTest(unittest.TestCase):
         self.assertIn("\\u003c/script", html)
         self.assertNotIn("https://", html)
         graph = json.loads(Path(result["graph"]).read_text(encoding="utf-8"))
-        self.assertEqual(graph["schema_version"], 2)
+        self.assertEqual(graph["schema_version"], 3)
         self.assertTrue(all("group" in n for n in graph["nodes"]))
 
     def test_install_preserves_other_servers_and_is_idempotent(self):

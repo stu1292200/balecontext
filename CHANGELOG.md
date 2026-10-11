@@ -13,6 +13,9 @@
 - The MCP server remembers which source ranges it already sent in a session.
 - Edges record the call-site line; `self.attr` property uses and same-class local
   object calls are resolved (INFERRED). The index rebuilds automatically on schema change.
+- Refresh skips reading files whose size and modification time are unchanged (with a
+  2-second racily-clean guard), cutting an unchanged refresh of Django from about 4.2 s
+  to about 0.25 s. Index schema 3.
 - Offline relevance benchmark (`benchmarks/relevance.py`) with gold answers for
   Django and requests.
 
