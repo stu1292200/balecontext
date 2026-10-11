@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sqlite3
 import sys
 import time
@@ -39,7 +40,10 @@ def parser() -> argparse.ArgumentParser:
         sub.add_argument("--root", default=".", help="Project directory (default: current directory)")
         if command != "mcp":
             sub.add_argument("--json", action="store_true", help="Machine-readable JSON output")
-        if command == "query":
+        if command == "mcp":
+            sub.add_argument("--no-watch", action="store_true", help="Disable background refresh; tool calls still refresh before reading")
+            sub.add_argument("--watch-interval", type=float, default=2.0, help="Seconds between background scans (default: 2, minimum: 0.2)")
+        elif command == "query":
             sub.add_argument("query")
             sub.add_argument("--budget", type=int, default=3000, help="Approximate text tokens (UTF-8 bytes / 4); not exact provider tokens")
         elif command == "related":
@@ -75,7 +79,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         project = Project(args.root)
         if args.command == "mcp":
-            serve(project)
+            serve(project, watch_interval=None if args.no_watch else args.watch_interval)
             return 0
         if args.command in {"index", "status"}:
             result = project.index()
@@ -104,8 +108,8 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "remember":
             result = save_memory(project, args.text, args.sources)
         elif args.command == "watch":
-            if args.interval < 0.2:
-                raise ValueError("Watch interval must be at least 0.2 seconds.")
+            if not math.isfinite(args.interval) or args.interval < 0.2:
+                raise ValueError("Watch interval must be finite and at least 0.2 seconds.")
             while True:
                 result = project.index()
                 if result["changed"] or result["removed"]:

@@ -27,7 +27,7 @@ class Project:
             raise ValueError("The index database must not be a symlink.")
 
     @contextmanager
-    def connect(self):
+    def connect(self, *, snapshot: bool = False):
         self.state.mkdir(exist_ok=True)
         db = sqlite3.connect(self.db_path, timeout=30)
         db.row_factory = sqlite3.Row
@@ -63,6 +63,10 @@ class Project:
             """)
             db.execute("INSERT OR IGNORE INTO metadata VALUES ('schema', ?)", (str(SCHEMA),))
             db.commit()
+            if snapshot:
+                # Keep all statements in a retrieval on the same index version,
+                # even when the background watcher commits an update in between.
+                db.execute("BEGIN")
             yield db
         finally:
             db.close()
@@ -70,12 +74,13 @@ class Project:
     def index(self) -> dict:
         started = time.monotonic()
         with self.connect() as db:
-            known = {row["path"]: (row["size"], row["mtime_ns"], row["seen_ns"]) for row in db.execute("SELECT path, size, mtime_ns, seen_ns FROM files WHERE size IS NOT NULL")}
-        # Unchanged files (same size and mtime, read safely after the mtime) are not reopened.
-        contents, unchanged, file_stats, skipped = scan(self.root, known)
-        with self.connect() as db:
             with db:
                 db.execute("BEGIN IMMEDIATE")
+                # Scan after taking the write lock. Two agent processes must not
+                # commit an older scan after a newer one has already been indexed.
+                known = {row["path"]: (row["size"], row["mtime_ns"], row["seen_ns"]) for row in db.execute("SELECT path, size, mtime_ns, seen_ns FROM files WHERE size IS NOT NULL")}
+                # Unchanged files (same size and mtime, read safely after the mtime) are not reopened.
+                contents, unchanged, file_stats, skipped = scan(self.root, known)
                 previous = {row["path"]: row["hash"] for row in db.execute("SELECT path, hash FROM files")}
                 unchanged = {p for p in unchanged if p in previous}
                 hashes = {p: hashlib.sha256(t.encode("utf-8")).hexdigest() for p, t in contents.items()}
@@ -126,6 +131,7 @@ class Project:
                     db.execute("INSERT OR REPLACE INTO metadata VALUES ('generation', ?)", (str(time.time_ns()),))
                 db.execute("INSERT OR REPLACE INTO metadata VALUES ('last_index', ?)", (str(time.time()),))
                 db.execute("INSERT OR REPLACE INTO metadata VALUES ('skipped', ?)", (json.dumps(skipped),))
+            db.execute("BEGIN")
             stats = self._stats(db)
         return {**stats, "changed": len(changed), "removed": len(removed), "unchanged": len(hashes) - len(changed), "elapsed_ms": round((time.monotonic() - started) * 1000)}
 
@@ -143,13 +149,13 @@ class Project:
     def stats(self, refresh: bool = True) -> dict:
         if refresh:
             return self.index()
-        with self.connect() as db:
+        with self.connect(snapshot=True) as db:
             return self._stats(db)
 
     def graph(self, refresh: bool = True) -> dict:
         if refresh:
             self.index()
-        with self.connect() as db:
+        with self.connect(snapshot=True) as db:
             nodes = [dict(r) for r in db.execute("SELECT id,path,name,kind,start,end FROM nodes ORDER BY path,start,id")]
             edges = [dict(r) for r in db.execute("SELECT * FROM edges WHERE evidence != 'UNRESOLVED' ORDER BY source,target,relation")]
             # Weak components are groups, not claims of semantic community detection.

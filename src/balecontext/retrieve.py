@@ -256,6 +256,31 @@ def _call_root(db, seeds: list, ranked: list) -> list:
     return [best] + rest
 
 
+def _session_sent(db, session: dict | None) -> dict:
+    """Ranges already sent on this connection, forgetting files that changed since."""
+    if session is None:
+        return {}
+    sent = session.setdefault("sent", {})
+    hashes = session.setdefault("hashes", {})
+    for path in list(sent):
+        row = db.execute("SELECT hash FROM files WHERE path=?", (path,)).fetchone()
+        if not row or row["hash"] != hashes.get(path):
+            sent.pop(path, None)
+            hashes.pop(path, None)
+    return sent
+
+
+def _remember_hashes(db, session: dict | None) -> None:
+    if session is None:
+        return
+    hashes = session.setdefault("hashes", {})
+    for path in session.get("sent", {}):
+        if path not in hashes:
+            row = db.execute("SELECT hash FROM files WHERE path=?", (path,)).fetchone()
+            if row:
+                hashes[path] = row["hash"]
+
+
 def _body_matches(db, query: str) -> list[dict]:
     try:
         return _matches(db, query, 60)
@@ -270,7 +295,7 @@ def context(project: Project, query: str, budget: int = 3000, session: dict | No
     project.index()
     limit = min(budget, FIRST_RESPONSE_CAP)
     parsed = rank.parse(query)
-    with project.connect() as db:
+    with project.connect(snapshot=True) as db:
         table = _symbol_table(project, db)
         body = _body_matches(db, query)
         body_scores = {row["id"]: 40.0 * (1 - index / max(1, len(body))) for index, row in enumerate(body) if row["kind"] not in {"file", "chunk"}}
@@ -329,7 +354,7 @@ def context(project: Project, query: str, budget: int = 3000, session: dict | No
                     related_items.append(({"id": other.id, "path": other.path, "name": other.name, "kind": other.kind, "start": other.start, "end": other.end}, f"related {other.category}"))
         seed_ids = {entry.id for _, entry, _ in seeds}
         header = f"BALECONTEXT EVIDENCE PACK. Query read as {parsed.describe()}."
-        session_sent = session.setdefault("sent", {}) if session is not None else {}
+        session_sent = _session_sent(db, session)
         map_lines = [_map_line(item, role) for item, role in planned + related_items]
         footer_reserve = min(120 + estimate("\n".join(map_lines[:20])), limit // 4)
         # Helpers are first shown up to HELPER_BODY lines; if that leaves budget unused,
@@ -374,6 +399,7 @@ def context(project: Project, query: str, budget: int = 3000, session: dict | No
                 break
         if session is not None:
             session["sent"] = sent
+            _remember_hashes(db, session)
         if not seeds:
             # No symbol matched by name: fall back to exact text excerpts around matching lines.
             words = terms(query)
@@ -450,11 +476,11 @@ def expand(project: Project, ids: list[str], budget: int = 4000, session: dict |
     if not isinstance(ids, list) or not ids or len(ids) > 20 or not all(isinstance(i, str) and i for i in ids):
         raise ValueError("Provide 1 to 20 node ids from a previous BaleContext response.")
     project.index()
-    with project.connect() as db:
+    with project.connect(snapshot=True) as db:
         files = _Files(db)
         sections = [NOTICE]
         used, missing, truncated = [], [], []
-        sent = session.setdefault("sent", {}) if session is not None else {}
+        sent = _session_sent(db, session)
         for identifier in dict.fromkeys(ids):
             row = db.execute("SELECT id,path,name,kind,start,end FROM nodes WHERE id=?", (identifier,)).fetchone()
             if not row:
@@ -475,6 +501,7 @@ def expand(project: Project, ids: list[str], budget: int = 4000, session: dict |
             sections.append(block)
             used.append({k: item[k] for k in ("id", "path", "name", "start", "end")})
             sent.setdefault(item["path"], []).append((numbered[0][0], numbered[-1][0]))
+            _remember_hashes(db, session)
             if not complete:
                 truncated.append(item["name"])
         if missing:
@@ -499,7 +526,7 @@ def related(project: Project, name: str, direction: str = "both", depth: int = 1
     if direction not in {"both", "callers", "dependencies"} or not 1 <= depth <= 4 or not 1 <= limit <= 100:
         raise ValueError("Invalid direction, depth (1..4), or limit (1..100).")
     project.index()
-    with project.connect() as db:
+    with project.connect(snapshot=True) as db:
         start = find_node(db, name)
         seen = {start["id"]}
         queue = deque([(start["id"], 0)])
@@ -531,7 +558,7 @@ def read_source(project: Project, path: str, start: int = 1, end: int | None = N
     if not isinstance(end, int) or isinstance(end, bool) or end < start or end - start >= 200:
         raise ValueError("Read between 1 and 200 lines at a time.")
     project.index()
-    with project.connect() as db:
+    with project.connect(snapshot=True) as db:
         row = db.execute("SELECT content,hash FROM files WHERE path=?", (path,)).fetchone()
         if not row:
             raise ValueError("File is not in the eligible index. Use a project-relative indexed path.")
@@ -543,7 +570,7 @@ def read_source(project: Project, path: str, start: int = 1, end: int | None = N
 
 def find_path(project: Project, source: str, target: str, undirected: bool = False) -> dict:
     project.index()
-    with project.connect() as db:
+    with project.connect(snapshot=True) as db:
         first, last = find_node(db, source), find_node(db, target)
         edges = [dict(row) for row in db.execute("SELECT * FROM edges ORDER BY source,target,relation")]
         adjacency: dict[str, list[tuple[str, dict]]] = {}

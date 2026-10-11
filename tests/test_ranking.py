@@ -172,6 +172,11 @@ class RankingTest(unittest.TestCase):
         self.assertNotIn("def is_valid", second["text"])
         self.assertIn("ALREADY SENT IN THIS SESSION", second["text"])
         self.assertLess(estimate(second["text"]), estimate(first["text"]))
+        # After an edit the changed file is sent again, never reported as already sent.
+        forms = self.root / "django/forms/forms.py"
+        forms.write_text(forms.read_text(encoding="utf-8").replace("return self.is_bound and not self.errors", "return bool(self.is_bound) and not self.errors"), encoding="utf-8")
+        third = context(self.project, PROSE, session=session)
+        self.assertIn("return bool(self.is_bound)", third["text"])
 
     def test_mcp_expand_tool_and_list_validation(self):
         server = Server(self.project)

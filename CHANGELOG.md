@@ -31,6 +31,15 @@
   claiming COMPLETE. Type declarations rank below behaviour. Index schema 4.
 - `benchmarks/claude_pair.py` and [docs/claude-code-test.md](docs/claude-code-test.md):
   a paired Claude Code test with and without BaleContext.
+- Start local background indexing with an initialized agent MCP connection.
+  Handle edits, additions, renames, deletions and new exclusions without a query.
+  Add `mcp --watch-interval` and `--no-watch`; per-request refresh remains enabled.
+- Keep retrieval reads on one SQLite snapshot and serialize discovery with
+  index writes to prevent out-of-order scans from concurrent agent processes.
+- Flag individual benchmark task regressions even when overall pass counts tie.
+  Support optional elapsed-time comparisons including local setup time.
+- Document a reproducible first evaluation plan. Real agent token and quality
+  results remain unmeasured.
 
 ## 0.1.0 — initial alpha
 
