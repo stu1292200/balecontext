@@ -7,6 +7,7 @@ import sys
 from . import __version__
 from .retrieve import context, read_source, related
 from .store import Project
+from .watch import IndexWatcher
 
 PROTOCOLS = ("2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25")
 TOOLS = [
@@ -57,8 +58,9 @@ def validate(schema: dict, arguments: dict) -> None:
 
 
 class Server:
-    def __init__(self, project: Project):
+    def __init__(self, project: Project, watcher: IndexWatcher | None = None):
         self.project = project
+        self.watcher = watcher
         self.initialized = False
 
     def handle(self, request) -> dict | None:
@@ -92,7 +94,9 @@ class Server:
                 validate(tool["inputSchema"], arguments)
                 handlers = {"balecontext_context": context, "balecontext_related": related, "balecontext_read": read_source}
                 if tool["name"] == "balecontext_status":
-                    output = json.dumps(self.project.index(), ensure_ascii=False)
+                    status = self.project.index()
+                    status["background_refresh"] = self.watcher.status() if self.watcher else {"active": False}
+                    output = json.dumps(status, ensure_ascii=False)
                 elif tool["name"] == "balecontext_context":
                     response = context(self.project, **arguments)
                     output = response["text"]
@@ -110,24 +114,31 @@ class Server:
         return {"jsonrpc": "2.0", "id": identifier, "result": result}
 
 
-def serve(project: Project) -> None:
+def serve(project: Project, watch_interval: float | None = 2.0) -> None:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
     if hasattr(sys.stdin, "reconfigure"):
         sys.stdin.reconfigure(encoding="utf-8")
-    server = Server(project)
-    while True:
-        line = sys.stdin.readline(1_048_577)
-        if not line:
-            break
-        if len(line) > 1_048_576:
-            while line and not line.endswith("\n"):
-                line = sys.stdin.readline(1_048_577)
-            response = {"jsonrpc": "2.0", "id": None, "error": {"code": -32600, "message": "Request exceeds 1 MiB"}}
-        else:
-            try:
-                response = server.handle(json.loads(line))
-            except (json.JSONDecodeError, UnicodeError):
-                response = {"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "Invalid JSON"}}
-        if response is not None:
-            print(json.dumps(response, ensure_ascii=False, separators=(",", ":")), flush=True)
+    watcher = IndexWatcher(project, watch_interval) if watch_interval is not None else None
+    server = Server(project, watcher)
+    try:
+        while True:
+            line = sys.stdin.readline(1_048_577)
+            if not line:
+                break
+            if len(line) > 1_048_576:
+                while line and not line.endswith("\n"):
+                    line = sys.stdin.readline(1_048_577)
+                response = {"jsonrpc": "2.0", "id": None, "error": {"code": -32600, "message": "Request exceeds 1 MiB"}}
+            else:
+                try:
+                    response = server.handle(json.loads(line))
+                except (json.JSONDecodeError, UnicodeError):
+                    response = {"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "Invalid JSON"}}
+            if response is not None:
+                print(json.dumps(response, ensure_ascii=False, separators=(",", ":")), flush=True)
+            if server.initialized and watcher is not None:
+                watcher.start()  # Idempotent, after replying to the handshake.
+    finally:
+        if watcher is not None:
+            watcher.stop()

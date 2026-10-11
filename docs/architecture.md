@@ -21,11 +21,26 @@ hashes drive invalidation. Deletions and new exclusions remove stale nodes,
 references and search entries. Cross-file edges are resolved again after a
 change. This makes small edits cheap to parse, though rebuilding all edges and
 rescanning file contents still have repository-size cost. Large-monorepo
-performance is not yet benchmarked.
+performance is not yet benchmarked. Discovery occurs under the write lock so
+concurrent indexers cannot overwrite a newer scan with an older one. Retrieval
+uses a SQLite read transaction to keep its statements on one consistent index
+snapshot while background updates commit.
 
 Source files are snapshots from the last refresh. A concurrent source edit after
 that refresh can still happen; returned file hashes identify the snapshot.
 Queries refresh before reading. Re-run the query after editing.
+
+In the unreleased source, the MCP server starts a background polling thread after
+its initialization response. It refreshes immediately, then waits two seconds
+between completed scans. Rapid edits are collected by the next scan; a single
+scan is not an atomic filesystem snapshot. There is no AI summarization or
+automatic source rewriting. The watcher retries transient failures and exposes
+its state through `balecontext_status`, without logging to protocol stdout.
+Foreground tool calls always perform their own refresh. Disconnecting stops
+scheduling scans; a daemon scan already running may finish until the process
+exits. `mcp --no-watch` disables background work, and `--watch-interval` controls
+the interval. No operating-system service or standalone background app is
+installed. Exported viewers remain static snapshots.
 
 Symbol IDs derive from relative path, qualified name, kind and start line. They
 are deterministic within a snapshot but can change when code moves. Line-based

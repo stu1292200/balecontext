@@ -92,7 +92,7 @@ def context(project: Project, query: str, budget: int = 2000) -> dict:
     validate_budget(budget)
     terms(query)
     project.index()
-    with project.connect() as db:
+    with project.connect(snapshot=True) as db:
         matches = _matches(db, query)
         candidate_ids = {row["id"] for row in matches}
         candidates = [(row, "query match") for row in matches]
@@ -164,7 +164,7 @@ def related(project: Project, name: str, direction: str = "both", depth: int = 1
     if direction not in {"both", "callers", "dependencies"} or not 1 <= depth <= 4 or not 1 <= limit <= 100:
         raise ValueError("Invalid direction, depth (1..4), or limit (1..100).")
     project.index()
-    with project.connect() as db:
+    with project.connect(snapshot=True) as db:
         start = find_node(db, name)
         seen = {start["id"]}
         queue = deque([(start["id"], 0)])
@@ -196,7 +196,7 @@ def read_source(project: Project, path: str, start: int = 1, end: int | None = N
     if not isinstance(end, int) or isinstance(end, bool) or end < start or end - start >= 200:
         raise ValueError("Read between 1 and 200 lines at a time.")
     project.index()
-    with project.connect() as db:
+    with project.connect(snapshot=True) as db:
         row = db.execute("SELECT content,hash FROM files WHERE path=?", (path,)).fetchone()
         if not row:
             raise ValueError("File is not in the eligible index. Use a project-relative indexed path.")
@@ -208,7 +208,7 @@ def read_source(project: Project, path: str, start: int = 1, end: int | None = N
 
 def find_path(project: Project, source: str, target: str, undirected: bool = False) -> dict:
     project.index()
-    with project.connect() as db:
+    with project.connect(snapshot=True) as db:
         first, last = find_node(db, source), find_node(db, target)
         edges = [dict(row) for row in db.execute("SELECT * FROM edges ORDER BY source,target,relation")]
         adjacency: dict[str, list[tuple[str, dict]]] = {}
