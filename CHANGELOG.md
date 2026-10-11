@@ -43,7 +43,9 @@
   lines), and an alias sharing a shown range no longer counts as missing.
 - When the hook's pack is PARTIAL, a larger pack's remaining definitions are saved to one
   file under `.balecontext/hook/` and the pack names it, so the model reads one file
-  instead of searching file by file (the last 20 files are kept).
+  instead of searching file by file (the last 20 files are kept). That larger pack
+  (12,000-token budget) shows every followed call in full before any of their helpers,
+  and its last line marks what is still missing as deeper detail to read only if needed.
 - Calling a class follows its constructor (`Request(...)` → `Request.__init__`); a class
   without one is left out instead of showing its header. Parameter lists of eight or more
   lines collapse to one line naming the parameters.

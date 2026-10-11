@@ -21,7 +21,7 @@ from .store import Project
 HOOK_BUDGET = 4000
 # When the inline pack is PARTIAL, a larger pack's remaining definitions go to one file the
 # model reads in a single step, instead of searching file by file.
-OVERFLOW_BUDGET = 8000
+OVERFLOW_BUDGET = 12000
 KEEP_OVERFLOW_FILES = 20
 # Claude Code keeps only a 2,000-character preview of hook context over 10,000 characters.
 MAX_CHARS = 9500
@@ -81,6 +81,10 @@ def _overflow(project: Project, prompt: str, text: str, response: dict) -> tuple
     if not extra:
         return text, response
     coverage = whole[whole.rindex("COVERAGE: "):] if "COVERAGE: " in whole else ""
+    # What is still missing here lies deeper than the call chain already shown; say so, so the
+    # model reads it only when the answer needs that detail rather than by default.
+    coverage = coverage.replace("Read the specific lines listed.",
+                                "These are deeper helpers of the code above: answer from this file and the pack, and read one only if the answer needs its detail.")
     folder = project.state / "hook"
     folder.mkdir(parents=True, exist_ok=True)
     path = folder / f"evidence-{hashlib.sha256(prompt.encode('utf-8')).hexdigest()[:12]}.md"

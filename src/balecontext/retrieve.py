@@ -21,9 +21,9 @@ def estimate(text: str) -> int:
     return math.ceil(len(text.encode("utf-8")) / 4)
 
 
-def validate_budget(budget: int) -> None:
-    if isinstance(budget, bool) or not isinstance(budget, int) or not 256 <= budget <= 8_000:
-        raise ValueError("Budget must be an integer between 256 and 8000 estimated tokens.")
+def validate_budget(budget: int, ceiling: int = 8_000) -> None:
+    if isinstance(budget, bool) or not isinstance(budget, int) or not 256 <= budget <= max(8_000, ceiling):
+        raise ValueError(f"Budget must be an integer between 256 and {max(8_000, ceiling)} estimated tokens.")
 
 
 def terms(query: str) -> list[str]:
@@ -394,7 +394,7 @@ def _body_matches(db, query: str) -> list[dict]:
 
 def context(project: Project, query: str, budget: int = 3000, session: dict | None = None, cap: int = FIRST_RESPONSE_CAP) -> dict:
     """Build an evidence pack: a map, the entry point and its callees in call order, and a coverage verdict."""
-    validate_budget(budget)
+    validate_budget(budget, cap)
     terms(query)
     project.index()
     limit = min(budget, cap)
@@ -467,8 +467,10 @@ def context(project: Project, query: str, budget: int = 3000, session: dict | No
 
         # Named like the question first (`adapter.send` for "sends a request"), then nearest the entry.
         reach.sort(key=lambda pair: (not named_like_question(pair[1][0]), depth_of.get(pair[0]["id"], 0)))
-        outward_limit = OUTWARD_LIMIT if limit <= FIRST_RESPONSE_CAP else 2 * OUTWARD_LIMIT
+        wide = limit > FIRST_RESPONSE_CAP
+        outward_limit = 2 * OUTWARD_LIMIT if wide else OUTWARD_LIMIT
         followed = 0
+        deferred: list[dict] = []
         for source, (item, role) in reach:
             if item["id"] in planned_ids or item["id"] in {e["id"] for e, _ in elsewhere + aside}:
                 continue
@@ -478,10 +480,18 @@ def context(project: Project, query: str, budget: int = 3000, session: dict | No
                 followed += 1
                 plan(item, role)
                 main_ids.add(item["id"])
-                if not role.startswith("overrides"):
+                if role.startswith("overrides"):
+                    pass
+                elif wide:
+                    deferred.append(item)
+                else:
                     walk(item, 2)
             else:
                 elsewhere.append((item, role))
+        # A large pack (the hook's saved file) shows every followed call before the helpers of any
+        # one of them, so a trace keeps its breadth (Session.send's hooks, cookies and redirects).
+        for item in deferred:
+            walk(item, 2)
         related_items: list[tuple[dict, str]] = []
         if seeds:
             entry = seeds[0][1]
@@ -513,7 +523,7 @@ def context(project: Project, query: str, budget: int = 3000, session: dict | No
                     sections.append(f"SOURCE ALREADY SENT IN THIS SESSION: {item['name']} {item['path']}:{item['start']}-{item['end']} id={item['id']}")
                     used.append({k: item[k] for k in ("id", "path", "name", "start", "end")})
                     continue
-                numbered, complete, note = _render_body(files, item, max(LONG_BODY, helper_lines) if item["id"] in seed_ids or item["id"] in main_ids else helper_lines)
+                numbered, complete, note = _render_body(files, item, (FULL_BODY if wide else max(LONG_BODY, helper_lines)) if item["id"] in seed_ids or item["id"] in main_ids else helper_lines)
                 numbered = [(n, text) for n, text in numbered if not any(a <= n <= b for a, b in ranges)]
                 if not numbered:
                     continue
