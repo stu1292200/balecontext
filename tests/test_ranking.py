@@ -395,6 +395,21 @@ class HookTest(unittest.TestCase):
         log = (self.root / ".balecontext" / "hook-log.jsonl").read_text(encoding="utf-8").splitlines()
         self.assertEqual(len(log), 4)
 
+    def test_partial_pack_saves_the_rest_to_one_file(self):
+        helpers = "".join(f"def step_{i}(order):\n" + "".join(f"    order.total += {j}  # adjust the order total\n" for j in range(40)) + "    return order\n\n" for i in range(8))
+        entry = "def checkout_order(order):\n" + "".join(f"    order = step_{i}(order)\n" for i in range(8)) + "    return order\n"
+        (self.root / "shop.py").write_text(helpers + entry, encoding="utf-8")
+        from balecontext import hook
+        project = Project(self.root)
+        project.index()
+        text, response = hook.prompt_pack(project, "How does checkout_order work through each step?")
+        self.assertLessEqual(len(text), hook.MAX_CHARS)
+        saved = Path(response["overflow_path"])
+        self.assertIn(str(saved), text)
+        rest = saved.read_text(encoding="utf-8")
+        self.assertIn("=== shop.py:", rest)
+        self.assertIn("COVERAGE: ", rest)
+
     def test_installer_adds_the_hook_once_and_keeps_other_settings(self):
         import json
         from balecontext.integrations import install

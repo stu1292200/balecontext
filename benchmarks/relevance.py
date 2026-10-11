@@ -39,7 +39,8 @@ def evaluate(project: Project, question: dict, budget: int, hook: bool = False) 
     else:
         response = context(project, question["query"], budget)
     elapsed = time.monotonic() - started
-    shown = [_key(source) for source in response["sources"]]
+    # The hook's overflow file is read in one step, so its definitions count as shown.
+    shown = [_key(source) for source in response["sources"] + response.get("overflow_sources", [])]
     listed = set(shown) if hook else {_key(item) for item in response.get("map", [])} | set(shown)
     # Aliases (`res.set = res.header = function ...`) share one range: the same code was shown.
     with project.connect() as db:

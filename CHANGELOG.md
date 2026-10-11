@@ -38,9 +38,20 @@
   named, with path and lines, in a PARTIAL verdict; the rest are listed as NOT FOLLOWED
   without blocking a COMPLETE verdict. A candidate whose class is named like the
   receiver (`self.query.chain()` → `Query.chain`) wins over the others. The entry's own
-  chain is shown at full length first. Index schema 6.
+  chain is shown at full length first. Index schema 8.
 - When budget remains, a last rebuild shows long definitions whole (up to 160
   lines), and an alias sharing a shown range no longer counts as missing.
+- When the hook's pack is PARTIAL, a larger pack's remaining definitions are saved to one
+  file under `.balecontext/hook/` and the pack names it, so the model reads one file
+  instead of searching file by file (the last 20 files are kept).
+- Calling a class follows its constructor (`Request(...)` → `Request.__init__`); a class
+  without one is left out instead of showing its header. Parameter lists of eight or more
+  lines collapse to one line naming the parameters.
+- Unknown-receiver calls match the class named like the receiver even for common names
+  (`adapter.send()` → `HTTPAdapter.send`), prefer a real implementation over an abstract
+  stub and a base class over its subclasses, and never come from an imported module
+  (`re.compile`). `kwargs.get()` inside a class is no longer that class's `get`. Followed
+  calls named like the question come first.
 - The prompt hook sends a compact pack (short source headings, shared indentation
   dropped, no query echo or id map) and starts from a larger budget, so more source fits
   under the hook limit.

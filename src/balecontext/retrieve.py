@@ -162,11 +162,28 @@ def _render_body(files: _Files, item: dict, max_lines: int) -> tuple[list[tuple[
             index = kept.index(first)
             kept[index] = (first[0], first[1].rstrip() + f"  [docstring lines {doc[0] + 1}-{doc[1]} not shown]")
         numbered = kept
+    numbered = _collapse_parameters(numbered)
     complete = True
     if len(numbered) > max_lines:
         numbered = numbered[:max_lines]
         complete = False
     return numbered, complete, note
+
+
+def _collapse_parameters(numbered: list[tuple[int, str]]) -> list[tuple[int, str]]:
+    """A parameter list of eight or more lines becomes one line naming the parameters."""
+    for index, (n, text) in enumerate(numbered[:4]):
+        if not text.rstrip().endswith("("):
+            continue
+        close = next((j for j in range(index + 1, min(len(numbered), index + 60)) if numbered[j][1].strip().startswith(")")), None)
+        if close is None or close - index - 1 < 8:
+            return numbered
+        params = [numbered[j][1].strip() for j in range(index + 1, close)]
+        names = [re.split(r"[:=,]", p, maxsplit=1)[0].strip() for p in params if p and not p.startswith(("#", "//"))]
+        first, last = numbered[index + 1][0], numbered[close - 1][0]
+        note = f"{text.rstrip()}  [parameters on lines {first}-{last}: {', '.join(name for name in names if name)}]"
+        return numbered[:index] + [(n, note)] + numbered[close:]
+    return numbered
 
 
 def _source_block(item: dict, numbered: list[tuple[int, str]], role: str, complete: bool, note: str) -> str:
@@ -184,16 +201,27 @@ def _map_line(item: dict, role: str) -> str:
 
 
 def _callees(db, node_id: str, path: str, cross: bool = False) -> list[dict]:
-    """Definitions this one calls or uses, in call order; other files only when `cross` (never tests)."""
-    if not cross:
-        rows = db.execute(
-            "SELECT n.id,n.path,n.name,n.kind,n.start,n.end,e.line FROM edges e JOIN nodes n ON n.id=e.target "
-            "WHERE e.source=? AND e.relation IN ('calls','uses') AND e.evidence != 'CANDIDATE' AND n.path=? ORDER BY e.line, n.start", (node_id, path))
-        return [dict(r) for r in rows]
+    """Definitions this one calls or uses, in call order; other files only when `cross` (never tests).
+
+    Calling a class means running its constructor, so `Request(...)` yields `Request.__init__`;
+    a class without one is left out (its header says little about what the call does).
+    """
     rows = db.execute(
-        "SELECT n.id,n.path,n.name,n.kind,n.start,n.end,e.line FROM edges e JOIN nodes n ON n.id=e.target "
-        "WHERE e.source=? AND e.relation IN ('calls','uses') AND e.evidence != 'CANDIDATE' AND n.kind NOT IN ('file','chunk') ORDER BY e.line, n.start", (node_id,))
-    return [dict(r) for r in rows if r["path"] == path or rank.path_class(r["path"]) == "code"]
+        "SELECT n.id,n.path,n.name,n.kind,n.start,n.end,e.line,e.relation FROM edges e JOIN nodes n ON n.id=e.target "
+        "WHERE e.source=? AND e.relation IN ('calls','uses') AND e.evidence != 'CANDIDATE' AND n.kind NOT IN ('file','chunk') "
+        + ("" if cross else "AND n.path=? ") + "ORDER BY e.line, n.start", (node_id,) if cross else (node_id, path))
+    found = []
+    for row in map(dict, rows):
+        if cross and row["path"] != path and rank.path_class(row["path"]) != "code":
+            continue
+        if row.pop("relation") == "calls" and row["kind"] == "class":
+            init = db.execute("SELECT id,path,name,kind,start,end FROM nodes WHERE path=? AND kind='method' AND name IN (?,?)",
+                              (row["path"], row["name"] + ".__init__", row["name"] + ".constructor")).fetchone()
+            if not init:
+                continue
+            row = dict(init) | {"line": row["line"]}
+        found.append(row)
+    return found
 
 
 def _outward(db, item: dict) -> list[tuple[dict, str]]:
@@ -215,9 +243,38 @@ def _outward(db, item: dict) -> list[tuple[dict, str]]:
         elif row["path"] != item["path"]:
             found.append((row, f"called by {item['name']} at line {row['line']} (other file)"))
     for line, rows in by_line.items():
+        # A real implementation before an abstract stub (BaseAdapter.send), a base class before its
+        # subclasses (ModelBackend before RemoteUserBackend), then the fuller definition.
+        group = list(rows)  # the list reads as empty while it is being sorted
+        rows.sort(key=lambda r: (_stub(db, r), not _base_of_others(db, r, group), -(r["end"] - r["start"]), r["path"], r["start"]))
         others = ", ".join(r["name"] for r in rows[1:])
         found.append((rows[0], f"called by {item['name']} at line {line} (receiver type not known" + (f"; also defined as {others})" if others else ")")))
     return found
+
+
+def _stub(db, item: dict) -> bool:
+    """A method whose body, without its docstring and comments, is only pass, ..., return or raise NotImplementedError."""
+    row = db.execute("SELECT content FROM files WHERE path=?", (item["path"],)).fetchone()
+    if not row:
+        return False
+    lines = row[0].splitlines()[item["start"] - 1:item["end"]]
+    # Skip a multi-line signature: the body starts after the first line ending the header.
+    header = next((i for i, line in enumerate(lines[:30]) if line.rstrip().endswith((":", "{"))), 0)
+    body = "\n".join(lines[header + 1:])
+    body = re.sub(r'(?s)("""|\'\'\').*?\1', "", body)
+    lines = [line.strip() for line in body.splitlines() if line.strip() and not line.strip().startswith(("#", "//", "@"))]
+    return len(lines) <= 1 and all(re.fullmatch(r"pass|\.\.\.|return( None)?|raise NotImplementedError.*|throw new Error.*|\}", line) for line in lines)
+
+
+def _base_of_others(db, item: dict, rows: list[dict]) -> bool:
+    owner = item["name"].rsplit(".", 1)[0]
+    others = {(r["path"], r["name"].rsplit(".", 1)[0]) for r in rows if r["id"] != item["id"]}
+    for row in db.execute(
+            "SELECT s.path, s.name FROM nodes c JOIN edges e ON e.target=c.id AND e.relation='inherits' JOIN nodes s ON s.id=e.source "
+            "WHERE c.path=? AND c.name=? AND c.kind='class'", (item["path"], owner)):
+        if (row["path"], row["name"]) in others:
+            return True
+    return False
 
 
 def _overrides(db, item: dict) -> list[tuple[dict, str]]:
@@ -335,12 +392,12 @@ def _body_matches(db, query: str) -> list[dict]:
         return []
 
 
-def context(project: Project, query: str, budget: int = 3000, session: dict | None = None) -> dict:
+def context(project: Project, query: str, budget: int = 3000, session: dict | None = None, cap: int = FIRST_RESPONSE_CAP) -> dict:
     """Build an evidence pack: a map, the entry point and its callees in call order, and a coverage verdict."""
     validate_budget(budget)
     terms(query)
     project.index()
-    limit = min(budget, FIRST_RESPONSE_CAP)
+    limit = min(budget, cap)
     parsed = rank.parse(query)
     with project.connect(snapshot=True) as db:
         table = _symbol_table(project, db)
@@ -405,14 +462,19 @@ def context(project: Project, query: str, budget: int = 3000, session: dict | No
         # when named like the question.
         near = {item["id"] for item in main_chain if depth_of.get(item["id"], 0) <= 3}
         reach = [(source, pair) for source in main_chain for pair in _outward(db, source) + _overrides(db, source)]
+        def named_like_question(item: dict) -> bool:
+            return bool({rank.stem(t) for t in rank.split_identifier(item["name"].rsplit(".", 1)[-1])} & query_words)
+
+        # Named like the question first (`adapter.send` for "sends a request"), then nearest the entry.
+        reach.sort(key=lambda pair: (not named_like_question(pair[1][0]), depth_of.get(pair[0]["id"], 0)))
+        outward_limit = OUTWARD_LIMIT if limit <= FIRST_RESPONSE_CAP else 2 * OUTWARD_LIMIT
         followed = 0
         for source, (item, role) in reach:
             if item["id"] in planned_ids or item["id"] in {e["id"] for e, _ in elsewhere + aside}:
                 continue
-            leaf_tokens = {rank.stem(t) for t in rank.split_identifier(item["name"].rsplit(".", 1)[-1])}
-            if source["id"] not in near and not leaf_tokens & query_words:
+            if source["id"] not in near and not named_like_question(item):
                 aside.append((item, role))
-            elif followed < OUTWARD_LIMIT:
+            elif followed < outward_limit:
                 followed += 1
                 plan(item, role)
                 main_ids.add(item["id"])

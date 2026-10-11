@@ -326,6 +326,8 @@ def resolve(nodes: list[dict], refs: list[dict]) -> list[dict]:
         return hits[0] if len(hits) == 1 else None
 
     bindings: dict[tuple[str, str, str], tuple[str, str]] = {}
+    # Names a file imports, resolved or not: `re.compile()` is a module call, never a project method.
+    imported_names = {(by_id[r["source"]]["path"], r["name"]) for r in refs if r["relation"] == "imports"}
     edges: list[dict] = []
     for ref in refs:
         if ref["relation"] != "imports":
@@ -374,17 +376,23 @@ def resolve(nodes: list[dict], refs: list[dict]) -> list[dict]:
             # `clone._filter_or_exclude_inplace()` inside QuerySet: a local object calling a method
             # that only this class defines. Labelled INFERRED like every resolved call.
             head, attr = name.split(".")
-            if not any(bindings.get((path, ".".join(scope_parts[:length]), head)) for length in range(len(scope_parts), -1, -1)):
+            # `kwargs.get("stream")` inside Session is a dict call, not Session.get.
+            if attr not in COMMON_METHODS and not any(bindings.get((path, ".".join(scope_parts[:length]), head)) for length in range(len(scope_parts), -1, -1)):
                 destination = symbol(path, ref["class_name"] + "." + attr)
                 if destination == ref["source"]:
                     destination = None
         leaf = name.rsplit(".", 1)[-1]
-        candidates = [c for c in methods_by_leaf.get(leaf, []) if c != ref["source"]] if "." in name and leaf in project_leaves else []
-        if len(candidates) > 1:
-            # `self.query.chain()` means Query.chain, not RawQuery.chain: prefer the class named like the receiver.
+        candidates: list[str] = []
+        if "." in name and not destination and (path, name.split(".", 1)[0]) not in imported_names:
+            # `self.query.chain()` means Query.chain, not RawQuery.chain; `adapter.send()` means an
+            # *Adapter class's send even though `send` is a common name. Otherwise only a name few
+            # project methods share counts.
+            defined = [c for c in methods_by_leaf.get(leaf, []) if c != ref["source"]]
             receiver = name.rsplit(".", 2)[-2].lstrip("#_").lower()
-            named = [c for c in candidates if by_id[c]["name"].rsplit(".", 1)[0].rsplit(".", 1)[-1].lower() == receiver]
-            candidates = named or candidates
+            owner = {c: by_id[c]["name"].rsplit(".", 1)[0].rsplit(".", 1)[-1].lower() for c in defined}
+            exact = [c for c in defined if owner[c] == receiver]
+            suffix = [c for c in defined if len(receiver) >= 4 and owner[c].endswith(receiver)]
+            candidates = exact or suffix or (defined if leaf in project_leaves else [])
         if destination:
             edges.append(edge(ref["source"], destination, ref["relation"], "INFERRED", ref.get("line")))
         elif ref["relation"] == "calls" and 1 <= len(candidates) <= 3:
