@@ -29,6 +29,16 @@
 - Calls on `self.`/`this.` chains that cannot be followed are recorded, and any shown
   definition with one makes the verdict PARTIAL ("calls not followed: ...") instead of
   claiming COMPLETE. Type declarations rank below behaviour. Index schema 4.
+- Packs follow the chain where it leaves the entry's file: calls into other modules,
+  calls on objects whose type is unknown when at most three project methods carry the
+  name (`field._clean_bound_field(bf)`, labelled "receiver type not known" and stored
+  as CANDIDATE edges that the main walk, graph and paths ignore), and direct subclass
+  overrides (`BaseModelForm._post_clean`). They are shown only with budget left and
+  otherwise named, with path and lines, in a PARTIAL verdict. The entry's own chain is
+  shown at full length first. Index schema 5.
+- The prompt hook sends a compact pack (short source headings, no id map) and starts
+  from a larger budget, so more source fits under the hook limit.
+  `benchmarks/relevance.py --hook` measures what the hook would send.
 - `benchmarks/claude_pair.py` and [docs/claude-code-test.md](docs/claude-code-test.md):
   a paired Claude Code test with and without BaleContext, recording every tool call.
 - `balecontext hook claude` and `install claude --hook`: a Claude Code prompt hook that

@@ -1,7 +1,7 @@
 {
   "repository": "https://github.com/django/django.git",
   "commit": "0f34a4c",
-  "note": "Gold lists name the definitions a correct, complete answer must cite. Written from the source before tuning ranking.",
+  "note": "Gold lists name the definitions a correct, complete answer must cite. Written from the source before tuning ranking. form-is-valid-prose gained add_error, Field._clean_bound_field, Field.clean, Field.run_validators and BaseModelForm._post_clean after a real Claude Code run showed a correct answer needs them; the earlier code showed 64% of that list and wrongly called itself COMPLETE.",
   "questions": [
     {
       "id": "form-is-valid-prose",
@@ -13,7 +13,12 @@
         {"name": "BaseForm.full_clean", "path": "django/forms/forms.py"},
         {"name": "BaseForm._clean_fields", "path": "django/forms/forms.py"},
         {"name": "BaseForm._clean_form", "path": "django/forms/forms.py"},
-        {"name": "BaseForm._post_clean", "path": "django/forms/forms.py"}
+        {"name": "BaseForm._post_clean", "path": "django/forms/forms.py"},
+        {"name": "BaseForm.add_error", "path": "django/forms/forms.py"},
+        {"name": "Field._clean_bound_field", "path": "django/forms/fields.py"},
+        {"name": "Field.clean", "path": "django/forms/fields.py"},
+        {"name": "Field.run_validators", "path": "django/forms/fields.py"},
+        {"name": "BaseModelForm._post_clean", "path": "django/forms/models.py"}
       ]
     },
     {

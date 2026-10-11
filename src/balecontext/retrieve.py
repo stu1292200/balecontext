@@ -91,6 +91,8 @@ def _uncovered_excerpt(row: dict, occupied: list[tuple[int, int]], words: list[s
 
 
 FIRST_RESPONSE_CAP = 4000
+# Definitions followed where the chain leaves the entry's file (other modules, overrides).
+OUTWARD_LIMIT = 4
 LONG_BODY = 60
 HELPER_BODY = 30
 _TABLES: dict[str, tuple[str, rank.SymbolTable]] = {}
@@ -184,18 +186,61 @@ def _callees(db, node_id: str, path: str, cross: bool = False) -> list[dict]:
     if not cross:
         rows = db.execute(
             "SELECT n.id,n.path,n.name,n.kind,n.start,n.end,e.line FROM edges e JOIN nodes n ON n.id=e.target "
-            "WHERE e.source=? AND e.relation IN ('calls','uses') AND n.path=? ORDER BY e.line, n.start", (node_id, path))
+            "WHERE e.source=? AND e.relation IN ('calls','uses') AND e.evidence != 'CANDIDATE' AND n.path=? ORDER BY e.line, n.start", (node_id, path))
         return [dict(r) for r in rows]
     rows = db.execute(
         "SELECT n.id,n.path,n.name,n.kind,n.start,n.end,e.line FROM edges e JOIN nodes n ON n.id=e.target "
-        "WHERE e.source=? AND e.relation IN ('calls','uses') AND n.kind NOT IN ('file','chunk') ORDER BY e.line, n.start", (node_id,))
+        "WHERE e.source=? AND e.relation IN ('calls','uses') AND e.evidence != 'CANDIDATE' AND n.kind NOT IN ('file','chunk') ORDER BY e.line, n.start", (node_id,))
     return [dict(r) for r in rows if r["path"] == path or rank.path_class(r["path"]) == "code"]
+
+
+def _outward(db, item: dict) -> list[tuple[dict, str]]:
+    """Calls from a definition into other files' code, and calls whose receiver type is unknown.
+
+    `field._clean_bound_field(bf)` has CANDIDATE edges to every project method of that name;
+    the first one is followed and the rest are named, so the answer can say which it read.
+    """
+    rows = db.execute(
+        "SELECT n.id,n.path,n.name,n.kind,n.start,n.end,e.line,e.evidence FROM edges e JOIN nodes n ON n.id=e.target "
+        "WHERE e.source=? AND e.relation='calls' AND n.kind NOT IN ('file','chunk','class') ORDER BY e.line, n.path, n.start", (item["id"],))
+    found: list[tuple[dict, str]] = []
+    by_line: dict[int, list[dict]] = {}
+    for row in map(dict, rows):
+        if rank.path_class(row["path"]) != "code":
+            continue
+        if row["evidence"] == "CANDIDATE":
+            by_line.setdefault(row["line"] or 0, []).append(row)
+        elif row["path"] != item["path"]:
+            found.append((row, f"called by {item['name']} at line {row['line']} (other file)"))
+    for line, rows in by_line.items():
+        others = ", ".join(r["name"] for r in rows[1:])
+        found.append((rows[0], f"called by {item['name']} at line {line} (receiver type not known" + (f"; also defined as {others})" if others else ")")))
+    return found
+
+
+def _overrides(db, item: dict) -> list[tuple[dict, str]]:
+    """Methods that override this one in direct subclasses (project code, never tests)."""
+    if item["kind"] != "method" or "." not in item["name"]:
+        return []
+    owner, leaf = item["name"].rsplit(".", 1)
+    if leaf.startswith("__"):
+        return []
+    found = []
+    for row in db.execute(
+            "SELECT s.name, s.path FROM nodes c JOIN edges e ON e.target=c.id AND e.relation='inherits' JOIN nodes s ON s.id=e.source "
+            "WHERE c.path=? AND c.name=? AND c.kind='class' ORDER BY s.path, s.start", (item["path"], owner)):
+        if rank.path_class(row["path"]) != "code":
+            continue
+        method = db.execute("SELECT id,path,name,kind,start,end FROM nodes WHERE path=? AND name=? AND kind='method'", (row["path"], row["name"] + "." + leaf)).fetchone()
+        if method:
+            found.append((dict(method), f"overrides {item['name']} in subclass {row['name']}"))
+    return found
 
 
 def _callers(db, node_id: str) -> list[dict]:
     rows = db.execute(
         "SELECT n.id,n.path,n.name,n.kind,n.start,n.end,e.line FROM edges e JOIN nodes n ON n.id=e.source "
-        "WHERE e.target=? AND e.relation IN ('calls','uses') AND n.kind NOT IN ('file','chunk') ORDER BY n.path, n.start LIMIT 20", (node_id,))
+        "WHERE e.target=? AND e.relation IN ('calls','uses') AND e.evidence != 'CANDIDATE' AND n.kind NOT IN ('file','chunk') ORDER BY n.path, n.start LIMIT 20", (node_id,))
     return [dict(r) for r in rows]
 
 
@@ -343,6 +388,25 @@ def context(project: Project, query: str, budget: int = 3000, session: dict | No
             if entry.kind != "class":
                 # The entry's chain may continue in another module (res.render -> app.render).
                 walk(item, 4 if position == 0 else 1, cross=position == 0)
+        # Then the chain where it leaves this file: calls into other modules, calls on objects of
+        # unknown type, and subclass overrides of the methods shown. Shown only if budget is left,
+        # and named in the verdict otherwise, so a pack never calls itself complete without them.
+        elsewhere: list[tuple[dict, str]] = []
+        main_chain = [item for item, _ in planned if item["kind"] != "class"]
+        # The entry's own chain is shown at full length before anything followed outside it.
+        main_ids = {item["id"] for item in main_chain[:12]}
+        reach = [pair for item in main_chain for pair in _outward(db, item) + _overrides(db, item)]
+        followed = 0
+        for item, role in reach:
+            if item["id"] in planned_ids:
+                continue
+            if followed < OUTWARD_LIMIT:
+                followed += 1
+                plan(item, role)
+                if not role.startswith("overrides"):
+                    walk(item, 2)
+            elif item["id"] not in {e["id"] for e, _ in elsewhere}:
+                elsewhere.append((item, role))
         related_items: list[tuple[dict, str]] = []
         if seeds:
             entry = seeds[0][1]
@@ -374,7 +438,7 @@ def context(project: Project, query: str, budget: int = 3000, session: dict | No
                     sections.append(f"SOURCE ALREADY SENT IN THIS SESSION: {item['name']} {item['path']}:{item['start']}-{item['end']} id={item['id']}")
                     used.append({k: item[k] for k in ("id", "path", "name", "start", "end")})
                     continue
-                numbered, complete, note = _render_body(files, item, LONG_BODY if item["id"] in seed_ids else helper_lines)
+                numbered, complete, note = _render_body(files, item, LONG_BODY if item["id"] in seed_ids or item["id"] in main_ids else helper_lines)
                 numbered = [(n, text) for n, text in numbered if not any(a <= n <= b for a, b in ranges)]
                 if not numbered:
                     continue
@@ -420,9 +484,13 @@ def context(project: Project, query: str, budget: int = 3000, session: dict | No
                 ranges.append((excerpt["start"], shown_end))
         shown_ids = {u["id"] for u in used}
         listed = [line for line in map_lines]
-        not_included = [(item, role) for item, role in planned if item["id"] not in shown_ids] + omitted
+        not_included = [(item, role) for item, role in planned if item["id"] not in shown_ids] + omitted + elsewhere
         # Same-file definitions called by shown code but not shown keep the verdict honest.
+        # Definitions followed outside the main chain are shown to a fixed depth, not to closure.
+        chain_ids = {item["id"] for item in main_chain}
         for shown_item in used:
+            if shown_item["id"] not in chain_ids:
+                continue
             for callee in _callees(db, shown_item["id"], shown_item["path"]):
                 if callee["id"] not in shown_ids and not any(a <= callee["start"] and callee["end"] <= b for a, b in occupied.get(callee["path"], [])):
                     not_included.append((callee, f"called by {shown_item['name']} at line {callee['line']}"))
@@ -443,7 +511,7 @@ def context(project: Project, query: str, budget: int = 3000, session: dict | No
             if truncated:
                 gaps.append("cut short: " + ", ".join(truncated))
             if not_included:
-                gaps.append("not included: " + ", ".join(item["name"] for item, _ in not_included[:8]))
+                gaps.append("not included: " + ", ".join(f"{item['name']} {item['path']}:{item['start']}-{item['end']}" for item, _ in not_included[:8]))
             if unresolved:
                 gaps.append("no definition found for: " + ", ".join(unresolved))
             if unfollowed:
@@ -453,7 +521,7 @@ def context(project: Project, query: str, budget: int = 3000, session: dict | No
             coverage = "COVERAGE: PARTIAL (" + "; ".join(gaps) + "). Fetch listed ids with balecontext_expand, or read the specific lines."
         else:
             verdict = "COMPLETE"
-            coverage = "COVERAGE: COMPLETE. The entry point and every definition it calls in the same file are shown in full above. Answer from this evidence; read further only for behaviour outside these definitions."
+            coverage = "COVERAGE: COMPLETE. The entry point, every definition it calls (other files included) and direct subclass overrides are shown in full above. Answer from this evidence; read further only for behaviour outside these definitions."
         tail: list[str] = []
         if listed:
             tail.append("MAP (shown above, related, or available by id):\n" + "\n".join(listed[:20]))
@@ -574,7 +642,7 @@ def find_path(project: Project, source: str, target: str, undirected: bool = Fal
     project.index()
     with project.connect(snapshot=True) as db:
         first, last = find_node(db, source), find_node(db, target)
-        edges = [dict(row) for row in db.execute("SELECT * FROM edges ORDER BY source,target,relation")]
+        edges = [dict(row) for row in db.execute("SELECT * FROM edges WHERE evidence NOT IN ('UNRESOLVED', 'CANDIDATE') ORDER BY source,target,relation")]
         adjacency: dict[str, list[tuple[str, dict]]] = {}
         for relation in edges:
             adjacency.setdefault(relation["source"], []).append((relation["target"], relation))

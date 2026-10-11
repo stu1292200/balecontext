@@ -276,12 +276,12 @@ class JavaScriptTest(unittest.TestCase):
         self.assertEqual(response["sources"][0]["name"], "res.send")
         self.assertTrue({"res.set", "res.header"} & {source["name"] for source in response["sources"]})
 
-    def test_unfollowed_calls_keep_the_verdict_partial(self):
+    def test_unknown_receiver_calls_are_followed_by_name(self):
+        # `this.#node.search()`: only one project method is named `search`, so it is shown, labelled.
         response = context(self.project, "How does Router fetch dispatch a request?")
         names = [source["name"] for source in response["sources"]]
-        self.assertEqual(names[:2], ["Router.fetch", "Router.#dispatch"])
-        self.assertEqual(response["verdict"], "PARTIAL")
-        self.assertIn("calls not followed: this.#node.search", response["text"])
+        self.assertEqual(names, ["Router.fetch", "Router.#dispatch", "Node.search"])
+        self.assertIn("receiver type not known", response["text"])
 
 
 class ResolveTest(unittest.TestCase):
@@ -295,6 +295,17 @@ class ResolveTest(unittest.TestCase):
         self.assertIn(("Request.parse", "parse"), calls)
         self.assertNotIn(("Request.parse", "Request.parse"), calls)
 
+    def test_unknown_receiver_with_many_candidates_stays_unresolved(self):
+        classes = "".join(f"class Step{i}:\n    def advance(self):\n        return {i}\n\n" for i in range(4))
+        source = classes + "class Runner:\n    def go(self):\n        return self.step.advance()\n\ndef drive(task):\n    return task.go()\n"
+        result = extract("runner.py", source)
+        nodes = [node.dict() for node in result.nodes]
+        edges = resolve(nodes, result.refs)
+        by_id = {node["id"]: node for node in nodes}
+        labelled = {(by_id[e["source"]]["name"], by_id.get(e["target"], {"name": e["target"]})["name"], e["evidence"]) for e in edges if e["relation"] == "calls"}
+        self.assertIn(("Runner.go", "unresolved:self.step.advance", "UNRESOLVED"), labelled)
+        self.assertIn(("drive", "Runner.go", "CANDIDATE"), labelled)
+
     def test_entry_is_the_outermost_matching_function(self):
         temporary = tempfile.TemporaryDirectory(prefix="balecontext-root-")
         self.addCleanup(temporary.cleanup)
@@ -307,6 +318,32 @@ class ResolveTest(unittest.TestCase):
             encoding="utf-8")
         response = context(Project(root), "How does CsrfMiddleware check the token on a POST request?")
         self.assertEqual(response["sources"][0]["name"], "CsrfMiddleware.process_view")
+
+    def test_pack_follows_the_chain_out_of_the_entry_file(self):
+        # `field._clean_bound_field(bf)` has no known receiver type; `_post_clean` is overridden.
+        temporary = tempfile.TemporaryDirectory(prefix="balecontext-out-")
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        (root / "forms.py").write_text(
+            "class BaseForm:\n"
+            "    def is_valid(self):\n        return self.full_clean()\n\n"
+            "    def full_clean(self):\n        for field in self.fields:\n            field._clean_bound_field(self)\n        self._post_clean()\n\n"
+            "    def _post_clean(self):\n        pass\n", encoding="utf-8")
+        (root / "fields.py").write_text(
+            "class Field:\n"
+            "    def _clean_bound_field(self, form):\n        return self.clean(form)\n\n"
+            "    def clean(self, value):\n        return value\n", encoding="utf-8")
+        (root / "models.py").write_text(
+            "from forms import BaseForm\n\n"
+            "class BaseModelForm(BaseForm):\n"
+            "    def _post_clean(self):\n        return self.instance\n", encoding="utf-8")
+        response = context(Project(root), "What happens when BaseForm.is_valid() is called?")
+        names = [source["name"] for source in response["sources"]]
+        self.assertEqual(names[0], "BaseForm.is_valid")
+        for name in ("Field._clean_bound_field", "Field.clean", "BaseModelForm._post_clean"):
+            self.assertIn(name, names)
+        self.assertIn("receiver type not known", response["text"])
+        self.assertIn("overrides BaseForm._post_clean in subclass BaseModelForm", response["text"])
 
 
 class HookTest(unittest.TestCase):

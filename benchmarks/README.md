@@ -85,6 +85,7 @@ behaviour. A gold item counts as shown when a shown definition covers the same
 lines (aliases such as `res.set = res.header = function ...`). The script reports whether
 the expected entry point is the first source, how much of the gold evidence is
 shown as source or listed by id, the response size, and the coverage verdict.
+Add `--hook` to measure what the Claude Code prompt hook would send instead.
 
 `query --json` reports the size of retrieved text using UTF-8 bytes divided by
 four. This is a rough context-size estimate. Comparing it with the entire corpus

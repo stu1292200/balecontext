@@ -1,12 +1,15 @@
 """Offline relevance benchmark: no model calls, only BaleContext retrieval.
 
 Usage:
-    python benchmarks/relevance.py PATH/TO/CHECKOUT benchmarks/relevance/django.json [--budget 2000] [--json out.json]
+    python benchmarks/relevance.py PATH/TO/CHECKOUT benchmarks/relevance/django.json [--budget 2000] [--hook] [--json out.json]
 
 For each question it records where the expected entry point ranks, how much of
 the gold evidence appears as source in the first response, how much is at least
 listed by name, the response size, and whether the response claims to be
 complete. This checks retrieval quality before any paid agent comparison.
+With --hook it measures what the Claude Code prompt hook would hand the model
+instead (its size cap included); only source shown counts there, as the hook
+sends no id map.
 """
 from __future__ import annotations
 
@@ -19,6 +22,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from balecontext.hook import prompt_pack  # noqa: E402
 from balecontext.retrieve import context  # noqa: E402
 from balecontext.store import Project  # noqa: E402
 
@@ -27,12 +31,16 @@ def _key(item: dict) -> tuple[str, str]:
     return item["name"], item["path"]
 
 
-def evaluate(project: Project, question: dict, budget: int) -> dict:
+def evaluate(project: Project, question: dict, budget: int, hook: bool = False) -> dict:
     started = time.monotonic()
-    response = context(project, question["query"], budget)
+    if hook:
+        found = prompt_pack(project, question["query"])
+        response = found[1] | {"estimated_tokens": -(-len(found[0].encode("utf-8")) // 4)} if found else {"sources": [], "estimated_tokens": 0, "verdict": "NO HOOK"}
+    else:
+        response = context(project, question["query"], budget)
     elapsed = time.monotonic() - started
     shown = [_key(source) for source in response["sources"]]
-    listed = {_key(item) for item in response.get("map", [])} | set(shown)
+    listed = set(shown) if hook else {_key(item) for item in response.get("map", [])} | set(shown)
     # Aliases (`res.set = res.header = function ...`) share one range: the same code was shown.
     with project.connect() as db:
         ranges = {(r["name"], r["path"]): (r["start"], r["end"]) for r in db.execute("SELECT name,path,start,end FROM nodes")}
@@ -60,12 +68,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("checkout")
     parser.add_argument("questions")
     parser.add_argument("--budget", type=int, default=3000)
+    parser.add_argument("--hook", action="store_true", help="Measure the Claude Code prompt hook's text instead of the MCP first response")
     parser.add_argument("--json", help="Write the full results to this file")
     args = parser.parse_args(argv)
     spec = json.loads(Path(args.questions).read_text(encoding="utf-8"))
     project = Project(args.checkout)
     project.index()
-    rows = [evaluate(project, question, args.budget) for question in spec["questions"]]
+    rows = [evaluate(project, question, args.budget, args.hook) for question in spec["questions"]]
     print(f"{'question':28} {'entry':>5} {'shown':>6} {'listed':>6} {'tokens':>6} {'verdict':>8}")
     for row in rows:
         rank = row["entry_rank"] or "-"

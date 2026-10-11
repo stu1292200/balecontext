@@ -282,6 +282,10 @@ def resolve(nodes: list[dict], refs: list[dict]) -> list[dict]:
     # Method names the project itself defines, minus container and string methods that
     # attribute chains mostly reach (`self.fields.items()`, `this.headers.get()`).
     project_leaves = {n["name"].rsplit(".", 1)[-1] for n in nodes if n["kind"] in {"method", "function"} and not _test_path(n["path"])} - COMMON_METHODS
+    methods_by_leaf: dict[str, list[str]] = {}
+    for node in nodes:
+        if node["kind"] == "method" and not _test_path(node["path"]):
+            methods_by_leaf.setdefault(node["name"].rsplit(".", 1)[-1], []).append(node["id"])
     for node in nodes:
         symbols.setdefault((node["path"], node["name"]), []).append(node["id"])
         if node["kind"] not in {"file", "chunk"} and "." in node["name"] and not _test_path(node["path"]):
@@ -372,9 +376,16 @@ def resolve(nodes: list[dict], refs: list[dict]) -> list[dict]:
                 destination = symbol(path, ref["class_name"] + "." + attr)
                 if destination == ref["source"]:
                     destination = None
+        leaf = name.rsplit(".", 1)[-1]
+        candidates = [c for c in methods_by_leaf.get(leaf, []) if c != ref["source"]] if "." in name and leaf in project_leaves else []
         if destination:
             edges.append(edge(ref["source"], destination, ref["relation"], "INFERRED", ref.get("line")))
-        elif ref["relation"] == "calls" and name.startswith(("self.", "cls.", "this.")) and name.count(".") >= 2 and name.rsplit(".", 1)[1] in project_leaves:
+        elif ref["relation"] == "calls" and 1 <= len(candidates) <= 3:
+            # `field._clean_bound_field(bf)`: the receiver's type is unknown, but only a few project
+            # methods carry this name. Kept as CANDIDATE edges, never walked as a known call.
+            for candidate in candidates:
+                edges.append(edge(ref["source"], candidate, "calls", "CANDIDATE", ref.get("line")))
+        elif ref["relation"] == "calls" and name.startswith(("self.", "cls.", "this.")) and name.count(".") >= 2 and leaf in project_leaves:
             # `self.query.add_q()`, `this.#node.search()`: a call into project code that could not
             # be followed. Kept so a response never claims the chain is complete.
             edges.append(edge(ref["source"], "unresolved:" + name, "calls", "UNRESOLVED", ref.get("line")))

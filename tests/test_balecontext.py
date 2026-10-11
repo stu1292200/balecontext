@@ -281,7 +281,7 @@ class WorkspaceTest(unittest.TestCase):
         self.assertIn("\\u003c/script", html)
         self.assertNotIn("https://", html)
         graph = json.loads(Path(result["graph"]).read_text(encoding="utf-8"))
-        self.assertEqual(graph["schema_version"], 4)
+        self.assertEqual(graph["schema_version"], 5)
         self.assertTrue(all("group" in n for n in graph["nodes"]))
 
     def test_install_preserves_other_servers_and_is_idempotent(self):
