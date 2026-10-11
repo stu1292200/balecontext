@@ -1,0 +1,137 @@
+{
+  "repository": "https://github.com/honojs/hono.git",
+  "commit": "552ea02",
+  "note": "Held out TypeScript set: written from the source before any TypeScript-specific change. Class members are Class.member; private members keep their # (Class.#member). Correction after the first run: parse-body's gold first named HonoRequest.#cachedBody, which parseBody does not call; it delegates to parseBody in src/utils/body.ts.",
+  "questions": [
+    {
+      "id": "fetch-dispatch",
+      "query": "How does Hono handle an incoming request from app.fetch through routing to the handler response?",
+      "entry": {
+        "name": "Hono.fetch",
+        "path": "src/hono-base.ts"
+      },
+      "gold": [
+        {
+          "name": "Hono.fetch",
+          "path": "src/hono-base.ts"
+        },
+        {
+          "name": "Hono.#dispatch",
+          "path": "src/hono-base.ts"
+        },
+        {
+          "name": "compose",
+          "path": "src/compose.ts"
+        }
+      ]
+    },
+    {
+      "id": "compose-middleware",
+      "query": "How does compose run middleware and what happens if next() is called twice?",
+      "entry": {
+        "name": "compose",
+        "path": "src/compose.ts"
+      },
+      "gold": [
+        {
+          "name": "compose",
+          "path": "src/compose.ts"
+        }
+      ]
+    },
+    {
+      "id": "context-json",
+      "query": "What does c.json do to build the response in Hono's Context?",
+      "entry": {
+        "name": "Context.json",
+        "path": "src/context.ts"
+      },
+      "gold": [
+        {
+          "name": "Context.json",
+          "path": "src/context.ts"
+        },
+        {
+          "name": "Context.#newResponse",
+          "path": "src/context.ts"
+        }
+      ]
+    },
+    {
+      "id": "trie-router-match",
+      "query": "How does the TrieRouter match a path and collect params?",
+      "entry": {
+        "name": "TrieRouter.match",
+        "path": "src/router/trie-router/router.ts"
+      },
+      "gold": [
+        {
+          "name": "TrieRouter.match",
+          "path": "src/router/trie-router/router.ts"
+        },
+        {
+          "name": "Node.search",
+          "path": "src/router/trie-router/node.ts"
+        }
+      ]
+    },
+    {
+      "id": "error-handling",
+      "query": "How does Hono handle errors thrown by a handler, and how does onError change that?",
+      "entry": {
+        "name": "Hono.#handleError",
+        "path": "src/hono-base.ts"
+      },
+      "gold": [
+        {
+          "name": "Hono.#handleError",
+          "path": "src/hono-base.ts"
+        },
+        {
+          "name": "Hono.onError",
+          "path": "src/hono-base.ts"
+        },
+        {
+          "name": "errorHandler",
+          "path": "src/hono-base.ts"
+        }
+      ]
+    },
+    {
+      "id": "parse-body",
+      "query": "How does HonoRequest.parseBody parse and cache the request body?",
+      "entry": {
+        "name": "HonoRequest.parseBody",
+        "path": "src/request.ts"
+      },
+      "gold": [
+        {
+          "name": "HonoRequest.parseBody",
+          "path": "src/request.ts"
+        },
+        {
+          "name": "parseBody",
+          "path": "src/utils/body.ts"
+        }
+      ]
+    },
+    {
+      "id": "regexp-router-add",
+      "query": "How does RegExpRouter add a route and build its matcher?",
+      "entry": {
+        "name": "RegExpRouter.add",
+        "path": "src/router/reg-exp-router/router.ts"
+      },
+      "gold": [
+        {
+          "name": "RegExpRouter.add",
+          "path": "src/router/reg-exp-router/router.ts"
+        },
+        {
+          "name": "RegExpRouter.#buildMatcher",
+          "path": "src/router/reg-exp-router/router.ts"
+        }
+      ]
+    }
+  ]
+}

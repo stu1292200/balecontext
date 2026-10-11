@@ -11,7 +11,7 @@ from pathlib import Path
 from .extract import extract, resolve
 from .files import scan
 
-SCHEMA = 3
+SCHEMA = 4
 
 
 class Project:
@@ -133,7 +133,7 @@ class Project:
         return {
             "files": db.execute("SELECT count(*) FROM files").fetchone()[0],
             "nodes": db.execute("SELECT count(*) FROM nodes").fetchone()[0],
-            "edges": db.execute("SELECT count(*) FROM edges").fetchone()[0],
+            "edges": db.execute("SELECT count(*) FROM edges WHERE evidence != 'UNRESOLVED'").fetchone()[0],
             "source_bytes": sum(len(r[0].encode("utf-8")) for r in db.execute("SELECT content FROM files")),
             "parsers": {r[0]: r[1] for r in db.execute("SELECT parser, count(*) FROM files GROUP BY parser")},
             "warnings": [{"path": r[0], "messages": json.loads(r[1])} for r in db.execute("SELECT path, warnings FROM files WHERE warnings != '[]'")],
@@ -151,7 +151,7 @@ class Project:
             self.index()
         with self.connect() as db:
             nodes = [dict(r) for r in db.execute("SELECT id,path,name,kind,start,end FROM nodes ORDER BY path,start,id")]
-            edges = [dict(r) for r in db.execute("SELECT * FROM edges ORDER BY source,target,relation")]
+            edges = [dict(r) for r in db.execute("SELECT * FROM edges WHERE evidence != 'UNRESOLVED' ORDER BY source,target,relation")]
             # Weak components are groups, not claims of semantic community detection.
             adjacency = {n["id"]: [] for n in nodes}
             for e in edges:

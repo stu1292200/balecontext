@@ -179,11 +179,17 @@ def _map_line(item: dict, role: str) -> str:
     return f"- {item['name']} ({item['kind']}) {item['path']}:{item['start']}-{item['end']} [{role}] id={item['id']}"
 
 
-def _callees(db, node_id: str, path: str) -> list[dict]:
+def _callees(db, node_id: str, path: str, cross: bool = False) -> list[dict]:
+    """Definitions this one calls or uses, in call order; other files only when `cross` (never tests)."""
+    if not cross:
+        rows = db.execute(
+            "SELECT n.id,n.path,n.name,n.kind,n.start,n.end,e.line FROM edges e JOIN nodes n ON n.id=e.target "
+            "WHERE e.source=? AND e.relation IN ('calls','uses') AND n.path=? ORDER BY e.line, n.start", (node_id, path))
+        return [dict(r) for r in rows]
     rows = db.execute(
         "SELECT n.id,n.path,n.name,n.kind,n.start,n.end,e.line FROM edges e JOIN nodes n ON n.id=e.target "
-        "WHERE e.source=? AND e.relation IN ('calls','uses') AND n.path=? ORDER BY e.line, n.start", (node_id, path))
-    return [dict(r) for r in rows]
+        "WHERE e.source=? AND e.relation IN ('calls','uses') AND n.kind NOT IN ('file','chunk') ORDER BY e.line, n.start", (node_id,))
+    return [dict(r) for r in rows if r["path"] == path or rank.path_class(r["path"]) == "code"]
 
 
 def _callers(db, node_id: str) -> list[dict]:
@@ -191,6 +197,63 @@ def _callers(db, node_id: str) -> list[dict]:
         "SELECT n.id,n.path,n.name,n.kind,n.start,n.end,e.line FROM edges e JOIN nodes n ON n.id=e.source "
         "WHERE e.target=? AND e.relation IN ('calls','uses') AND n.kind NOT IN ('file','chunk') ORDER BY n.path, n.start LIMIT 20", (node_id,))
     return [dict(r) for r in rows]
+
+
+def _closure(db, node_id: str, path: str, depth: int = 4) -> set[str]:
+    """Ids reachable from a definition through same-file calls and attribute uses."""
+    seen: set[str] = set()
+    frontier = [node_id]
+    for _ in range(depth):
+        following = []
+        for current in frontier:
+            for callee in _callees(db, current, path):
+                if callee["id"] not in seen and callee["id"] != node_id:
+                    seen.add(callee["id"])
+                    following.append(callee["id"])
+        frontier = following
+    return seen
+
+
+def _call_root(db, seeds: list, ranked: list) -> list:
+    """Lead with the outermost function: the matching definition whose call chain reaches the most other matches.
+
+    `is_valid -> errors -> full_clean -> _clean_fields` starts at is_valid even when
+    full_clean scores higher; `process_view` leads `_check_token`, which it calls.
+    """
+    functions = [item for item in seeds if item[1].kind != "class"]
+    if not functions:
+        return seeds
+    top = functions[0]
+    # Class members seeded from a named class carry the class's score; compare own scores.
+    own = {item[1].id: item[0] for item in ranked}
+    floor = 0.4 * own.get(top[1].id, top[0])
+    candidates = list(functions)
+    candidate_ids = {item[1].id for item in candidates}
+    for item in ranked[:40]:
+        entry = item[1]
+        if len(candidates) >= 16:
+            break
+        if entry.kind != "class" and entry.category == "code" and entry.path == top[1].path and item[0] >= floor and entry.id not in candidate_ids:
+            candidates.append(item)
+            candidate_ids.add(entry.id)
+    seed_ids = {item[1].id for item in functions}
+    lead = {top[1].id}
+    if top[1].name.endswith((".__init__", ".__call__", ".constructor")):
+        owner = db.execute("SELECT id FROM nodes WHERE path=? AND name=? AND kind='class'", (top[1].path, top[1].name.rsplit(".", 1)[0])).fetchone()
+        if owner:
+            lead.add(owner["id"])
+    best, best_key = None, (0, 0)
+    for item in candidates:
+        reached = _closure(db, item[1].id, item[1].path)
+        if not reached & lead:
+            continue  # only a caller of the current lead (or of its class, for a constructor) can replace it
+        key = (len(reached & seed_ids), len(reached & candidate_ids))
+        if key > best_key:
+            best, best_key = item, key
+    if best is None:
+        return seeds
+    rest = [item for item in seeds if item[1].id != best[1].id]
+    return [best] + rest
 
 
 def _body_matches(db, query: str) -> list[dict]:
@@ -212,7 +275,7 @@ def context(project: Project, query: str, budget: int = 3000, session: dict | No
         body = _body_matches(db, query)
         body_scores = {row["id"]: 40.0 * (1 - index / max(1, len(body))) for index, row in enumerate(body) if row["kind"] not in {"file", "chunk"}}
         ranked = rank.score(table, parsed, body_scores)
-        seeds = rank.pick_seeds(parsed, ranked)
+        seeds = _call_root(db, rank.pick_seeds(parsed, ranked), ranked)
         files = _Files(db)
         # Planned order: each seed followed by what it calls, in the order it calls them.
         planned: list[tuple[dict, str]] = []
@@ -225,22 +288,22 @@ def context(project: Project, query: str, budget: int = 3000, session: dict | No
 
         query_words = set(parsed.words)
 
-        def walk(item: dict, depth: int) -> None:
+        def walk(item: dict, depth: int, cross: bool = False) -> None:
             # Breadth first in call order, but callees named like the question or the
             # caller ("save" -> "save_base") come before generic helpers.
             level = [item]
-            for _ in range(depth):
+            for step in range(depth):
                 following = []
                 for parent in level:
                     parent_tokens = {rank.stem(t) for t in rank.split_identifier(parent["name"].rsplit(".", 1)[-1])}
-                    callees = [c for c in _callees(db, parent["id"], parent["path"]) if c["id"] not in planned_ids]
+                    callees = [c for c in _callees(db, parent["id"], parent["path"], cross and step == 0) if c["id"] not in planned_ids]
                     parent_leaf = parent["name"].rsplit(".", 1)[-1].lstrip("_").lower()
 
                     def priority(c: dict) -> tuple:
                         leaf = c["name"].rsplit(".", 1)[-1].lstrip("_").lower()
                         tokens = {rank.stem(t) for t in rank.split_identifier(leaf)}
                         # `save` -> `save_base` continues the same operation; shared words come next.
-                        return (not leaf.startswith(parent_leaf), -len(tokens & (query_words | parent_tokens)), c.get("line") or 0)
+                        return (c["path"] != parent["path"], not leaf.startswith(parent_leaf), -len(tokens & (query_words | parent_tokens)), c.get("line") or 0)
 
                     callees.sort(key=priority)
                     for callee in callees:
@@ -253,7 +316,8 @@ def context(project: Project, query: str, budget: int = 3000, session: dict | No
             item = {"id": entry.id, "path": entry.path, "name": entry.name, "kind": entry.kind, "start": entry.start, "end": entry.end}
             plan(item, "entry" if position == 0 else ("matches " + ", ".join(sorted(matched)) if matched else "match"))
             if entry.kind != "class":
-                walk(item, 4 if position == 0 else 1)
+                # The entry's chain may continue in another module (res.render -> app.render).
+                walk(item, 4 if position == 0 else 1, cross=position == 0)
         related_items: list[tuple[dict, str]] = []
         if seeds:
             entry = seeds[0][1]
@@ -337,11 +401,17 @@ def context(project: Project, query: str, budget: int = 3000, session: dict | No
                 if callee["id"] not in shown_ids and not any(a <= callee["start"] and callee["end"] <= b for a, b in occupied.get(callee["path"], [])):
                     not_included.append((callee, f"called by {shown_item['name']} at line {callee['line']}"))
         not_included = list({item["id"]: (item, role) for item, role in not_included}.values())
+        unfollowed: list[str] = []
+        for shown_item in used:
+            for row in db.execute("SELECT target FROM edges WHERE source=? AND evidence='UNRESOLVED' ORDER BY line", (shown_item["id"],)):
+                call = row["target"].removeprefix("unresolved:")
+                if call not in unfollowed:
+                    unfollowed.append(call)
         unresolved = [i.text for i in parsed.identifiers if not any(i.text in matched for _, _, matched in seeds)]
         if not used:
             verdict = "NONE"
             coverage = "COVERAGE: NONE. No matching source found. Broaden the query or use the agent's normal search; do not infer absence from this result."
-        elif truncated or not_included or unresolved or not seeds:
+        elif truncated or not_included or unresolved or unfollowed or not seeds:
             verdict = "PARTIAL"
             gaps = []
             if truncated:
@@ -350,6 +420,8 @@ def context(project: Project, query: str, budget: int = 3000, session: dict | No
                 gaps.append("not included: " + ", ".join(item["name"] for item, _ in not_included[:8]))
             if unresolved:
                 gaps.append("no definition found for: " + ", ".join(unresolved))
+            if unfollowed:
+                gaps.append("calls not followed: " + ", ".join(unfollowed[:6]))
             if not seeds:
                 gaps.append("matched by text only")
             coverage = "COVERAGE: PARTIAL (" + "; ".join(gaps) + "). Fetch listed ids with balecontext_expand, or read the specific lines."

@@ -163,11 +163,47 @@ def javascript_extract(path: str, text: str) -> Extraction:
             "class_declaration": "class", "method_definition": "method",
             "interface_declaration": "interface", "type_alias_declaration": "type",
         }.get(node.type)
+        functions = {"arrow_function", "function_expression", "function"}
+        name_node = node.child_by_field_name("name")
         if node.type == "variable_declarator":
             body = node.child_by_field_name("value")
-            if body and body.type in {"arrow_function", "function_expression"}:
+            if body and body.type in functions:
                 kind = "function"
-        name_node = node.child_by_field_name("name")
+        elif node.type in {"public_field_definition", "field_definition"}:
+            # `fetch = (request) => ...` inside a class body.
+            body = node.child_by_field_name("value")
+            name_node = name_node or node.child_by_field_name("property")
+            if body and body.type in functions and class_name:
+                kind = "method"
+        elif node.type == "assignment_expression" and not scope:
+            # `res.send = function send(body) {...}`, `View.prototype.lookup = ...`,
+            # `exports.setCharset = ...` and chains such as `res.set = res.header = function`.
+            targets, right = [node.child_by_field_name("left")], node.child_by_field_name("right")
+            while right is not None and right.type == "assignment_expression":
+                targets.append(right.child_by_field_name("left"))
+                right = right.child_by_field_name("right")
+            if right is not None and right.type in functions:
+                statement = node.parent if node.parent is not None and node.parent.type == "expression_statement" else node
+                names = []
+                for target in targets:
+                    if target is None or target.type not in {"member_expression", "identifier"}:
+                        continue
+                    parts = [p for p in value(target).split(".") if p != "prototype"]
+                    while parts and parts[0] in {"module", "exports"} and len(parts) > 1:
+                        parts = parts[1:]
+                    if parts and all(re.fullmatch(r"[A-Za-z_$#][A-Za-z0-9_$]*", p) for p in parts):
+                        names.append(".".join(parts))
+                if names:
+                    # The innermost target holds the function; outer targets are aliases.
+                    for alias in names[:-1]:
+                        result.nodes.append(make_node(path, alias, "method" if "." in alias else "function", statement.start_point.row + 1, statement.end_point.row + 1, lines))
+                        result.edges.append(edge(owner.id, result.nodes[-1].id, "defines"))
+                    name = names[-1]
+                    item = make_node(path, name, "method" if "." in name else "function", statement.start_point.row + 1, statement.end_point.row + 1, lines)
+                    result.nodes.append(item)
+                    result.edges.append(edge(owner.id, item.id, "defines"))
+                    walk(right, item, name.split("."), name.rsplit(".", 1)[0] if "." in name else "")
+                    return
         if kind and name_node:
             name = value(name_node)
             qualified = ".".join(scope + [name])
@@ -222,14 +258,34 @@ def _complete_text_coverage(result: Extraction, path: str, text: str) -> Extract
     return result
 
 
+COMMON_METHODS = {
+    "get", "set", "items", "keys", "values", "append", "extend", "insert", "pop", "remove", "update", "add", "clear",
+    "copy", "discard", "setdefault", "join", "split", "strip", "format", "replace", "startswith", "endswith", "lower",
+    "upper", "encode", "decode", "read", "write", "close", "open", "push", "shift", "slice", "splice", "map", "filter",
+    "forEach", "reduce", "find", "some", "every", "includes", "indexOf", "has", "delete", "then", "catch", "toString",
+    "call", "apply", "bind", "emit", "on", "send", "next", "log", "debug", "info", "warning", "error", "exception",
+}
+
+
+def _test_path(path: str) -> bool:
+    parts = PurePosixPath(path.lower()).parts
+    return bool(set(parts[:-1]) & {"tests", "test", "__tests__", "spec", "specs", "testing"}) or parts[-1].startswith("test_") or ".test." in parts[-1] or ".spec." in parts[-1]
+
+
 def resolve(nodes: list[dict], refs: list[dict]) -> list[dict]:
     """Resolve only unambiguous local modules and lexical symbols; preserve uncertainty."""
     files = {n["path"]: n for n in nodes if n["kind"] == "file"}
     by_id = {n["id"]: n for n in nodes}
     symbols: dict[tuple[str, str], list[str]] = {}
     modules: dict[str, set[str]] = {}
+    global_names: dict[str, list[str]] = {}
+    # Method names the project itself defines, minus container and string methods that
+    # attribute chains mostly reach (`self.fields.items()`, `this.headers.get()`).
+    project_leaves = {n["name"].rsplit(".", 1)[-1] for n in nodes if n["kind"] in {"method", "function"} and not _test_path(n["path"])} - COMMON_METHODS
     for node in nodes:
         symbols.setdefault((node["path"], node["name"]), []).append(node["id"])
+        if node["kind"] not in {"file", "chunk"} and "." in node["name"] and not _test_path(node["path"]):
+            global_names.setdefault(node["name"], []).append(node["id"])
     for path in files:
         if not path.endswith((".py", ".pyi")):
             continue
@@ -294,18 +350,32 @@ def resolve(nodes: list[dict], refs: list[dict]) -> list[dict]:
             if destination:
                 break
             destination = symbol(path, ".".join(filter(None, [scope, name])))
+            if destination and length and "." not in name and by_id[destination]["kind"] == "method":
+                # A bare call inside a method never means a method of the class (that needs self./this.).
+                destination = None
             head, _, suffix = name.partition(".")
             binding = bindings.get((path, scope, head))
             if not destination and binding:
                 target, imported = binding
                 qualified = ".".join(filter(None, [imported, suffix]))
                 destination = symbol(target, qualified)
+        if not destination and "." in name and not name.startswith(("self.", "cls.", "this.")):
+            # `app.render` from response.js: a dotted name defined exactly once in the project's code.
+            hits = global_names.get(name, [])
+            if len(hits) == 1:
+                destination = hits[0]
         if not destination and ref.get("class_name") and name.count(".") == 1 and not name.startswith(("self.", "cls.", "this.")):
             # `clone._filter_or_exclude_inplace()` inside QuerySet: a local object calling a method
             # that only this class defines. Labelled INFERRED like every resolved call.
             head, attr = name.split(".")
             if not any(bindings.get((path, ".".join(scope_parts[:length]), head)) for length in range(len(scope_parts), -1, -1)):
                 destination = symbol(path, ref["class_name"] + "." + attr)
+                if destination == ref["source"]:
+                    destination = None
         if destination:
             edges.append(edge(ref["source"], destination, ref["relation"], "INFERRED", ref.get("line")))
+        elif ref["relation"] == "calls" and name.startswith(("self.", "cls.", "this.")) and name.count(".") >= 2 and name.rsplit(".", 1)[1] in project_leaves:
+            # `self.query.add_q()`, `this.#node.search()`: a call into project code that could not
+            # be followed. Kept so a response never claims the chain is complete.
+            edges.append(edge(ref["source"], "unresolved:" + name, "calls", "UNRESOLVED", ref.get("line")))
     return list({(e["source"], e["target"], e["relation"]): e for e in edges}.values())

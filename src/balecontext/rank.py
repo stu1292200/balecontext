@@ -74,6 +74,7 @@ class Identifier:
     leaf: str
     qualifiers: list[str]
     is_class: bool
+    called: bool = False
 
 
 @dataclass
@@ -82,6 +83,8 @@ class Query:
     words: list[str] = field(default_factory=list)
     wants_tests: bool = False
     wants_docs: bool = False
+    wants_types: bool = False
+    prose_words: set[str] = field(default_factory=set)
 
     def describe(self) -> str:
         names = ", ".join(i.text for i in self.identifiers) or "none"
@@ -104,6 +107,7 @@ def parse(query: str) -> Query:
     lowered = {w.lower() for w in re.findall(r"[A-Za-z]+", query)}
     result.wants_tests = bool(lowered & TEST_WORDS)
     result.wants_docs = bool(lowered & DOC_WORDS)
+    result.wants_types = bool(lowered & {"type", "types", "interface", "interfaces", "typing"})
     for match in TOKEN.finditer(query):
         token = match.group(0)
         called = token.endswith("()")
@@ -118,10 +122,12 @@ def parse(query: str) -> Query:
                 seen_identifiers.add(token)
                 segments = token.split(".")
                 leaf = segments[-1]
-                result.identifiers.append(Identifier(token, leaf, [s for s in segments[:-1] if s], leaf[:1].isupper() and not leaf.isupper()))
+                result.identifiers.append(Identifier(token, leaf, [s for s in segments[:-1] if s], leaf[:1].isupper() and not leaf.isupper(), called))
             words = split_identifier(token)
         else:
             words = split_identifier(token)
+            if len(words) == 1 and len(words[0]) > 2 and words[0] not in STOP:
+                result.prose_words.add(stem(words[0]))
         for word in words:
             if len(word) <= 2 or word in STOP:
                 continue
@@ -163,7 +169,7 @@ class SymbolTable:
             segments = row["name"].split(".")
             pure = PurePosixPath(row["path"])
             entry = Entry(
-                row["id"], row["path"], row["name"], row["kind"], row["start"], row["end"], segments[-1].lower(),
+                row["id"], row["path"], row["name"], row["kind"], row["start"], row["end"], segments[-1].lower().lstrip("#"),
                 [segment.lower() for segment in segments[:-1]],
                 {stem(t) for t in split_identifier(row["name"])},
                 {stem(t) for t in split_identifier(segments[-1])},
@@ -187,6 +193,7 @@ def score(table: SymbolTable, query: Query, body_scores: dict[str, float] | None
     """Return (score, entry, matched identifier texts) sorted best first."""
     body_scores = body_scores or {}
     class_names = {i.leaf.lower() for i in query.identifiers if i.is_class}
+    query_words = set(query.words)
     candidates: set[int] = set()
     for identifier in query.identifiers:
         candidates.update(table.by_leaf.get(identifier.leaf.lower(), ()))
@@ -209,6 +216,8 @@ def score(table: SymbolTable, query: Query, body_scores: dict[str, float] | None
         for identifier in query.identifiers:
             leaf = identifier.leaf.lower()
             full = identifier.text.lower()
+            if identifier.called and entry.kind in {"type", "interface"}:
+                continue  # `next()` is a call; a type named Next cannot be called.
             if entry.name.lower() == full or (identifier.qualifiers and entry.name.lower().endswith("." + full)):
                 value += 6000 * table.idf(table.by_leaf.get(leaf))
                 matched.add(identifier.text)
@@ -217,6 +226,9 @@ def score(table: SymbolTable, query: Query, body_scores: dict[str, float] | None
                 # Another identifier in the query names this symbol's class: `BaseForm full_clean`.
                 if class_names & set(entry.owner):
                     bonus += 2500
+                elif entry.owner and len(split_identifier(entry.owner[-1])) == 1 and stem(entry.owner[-1]) in query_words:
+                    # A plain word names the class: "Hono's Context ... c.json", "Hono ... onError".
+                    bonus += 1200
                 for qualifier in identifier.qualifiers:
                     q = stem(qualifier)
                     if qualifier.lower() in entry.owner:
@@ -243,6 +255,9 @@ def score(table: SymbolTable, query: Query, body_scores: dict[str, float] | None
         partial = [w for w in query.words if w not in entry.name_tokens and len(w) >= 5 and any(t.startswith(w[:-1]) or w.startswith(t) for t in entry.leaf_tokens if len(t) >= 4)]
         coverage = (len(leaf_hits) + len(owner_hits) + 0.5 * len(partial)) / total_terms
         value += sum(60 * word_idf[w] for w in leaf_hits) * (0.5 + coverage)
+        if entry.kind not in {"class", "type", "interface"} and len(entry.leaf_tokens) == 1 and stem(entry.leaf) in query.prose_words and len(table.by_leaf.get(entry.leaf, ())) <= 2:
+            # A plain word that is a function's whole, distinctive name: "How does compose run middleware?"
+            value += 150 * table.idf(table.by_leaf.get(entry.leaf))
         value += sum(30 * word_idf[w] for w in owner_hits) * (0.5 + coverage)
         value += sum(30 * word_idf[w] for w in partial) * (0.5 + coverage)
         value += sum(12 * word_idf[w] for w in path_hits)
@@ -250,6 +265,9 @@ def score(table: SymbolTable, query: Query, body_scores: dict[str, float] | None
         if value <= 0:
             continue
         multiplier = {"code": 1.0, "test": 0.2, "doc": 0.25, "example": 0.5, "other": 0.6}[entry.category]
+        if entry.kind in {"type", "interface"} and not query.wants_types:
+            # Type declarations describe shapes, not behaviour.
+            multiplier *= 0.2
         if entry.category == "test" and query.wants_tests:
             multiplier = 1.0
         if entry.category == "doc" and query.wants_docs:
@@ -310,7 +328,15 @@ def pick_seeds(query: Query, ranked: list[tuple[float, Entry, set[str]]], limit:
             members = [item for item in ranked if item[1].path == entry.path and item[1].name in (entry.name + ".__call__", entry.name + ".__init__") and item[1].id not in used_ids]
             members.sort(key=lambda item: not item[1].name.endswith("__call__"))
             fallback.update(item[1].id for item in members[:1])
-        for member in members[:2]:
+        # The action the question names first leads: "add a route and build its matcher".
+        position = {w: i for i, w in enumerate(query.words)}
+
+        def first_word(item) -> int:
+            hits = [position[w] for w in query.words for t in item[1].leaf_tokens if t == w or (len(t) >= 4 and len(w) >= 5 and (w.startswith(t) or t.startswith(w[:-1])))]
+            return min(hits, default=len(position))
+
+        members = sorted(members[:3], key=first_word)
+        for member in members:
             seeds.append((value * 0.99, member[1], member[2]))
             used_ids.add(member[1].id)
     seeds.sort(key=lambda item: -item[0])

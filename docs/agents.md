@@ -20,6 +20,9 @@ versions 2024-11-05, 2025-03-26, 2025-06-18 and 2025-11-25 for a tools-only stdi
 subset. It does not provide HTTP transport, remote access, resources, sampling,
 prompts, authentication, or agent orchestration.
 
+For Claude Code, [claude-code-test.md](claude-code-test.md) covers setup and a
+paired with/without token test.
+
 To verify a client:
 
 1. Install the package and run `balecontext doctor`.

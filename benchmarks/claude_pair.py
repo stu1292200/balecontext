@@ -1,0 +1,153 @@
+"""Paired Claude Code test: the same question with and without BaleContext.
+
+Usage (from any folder, with Claude Code and BaleContext installed):
+    python benchmarks/claude_pair.py PATH/TO/CHECKOUT --question-file question.txt [--runs 3] [--model sonnet]
+
+Each run calls `claude -p` twice in the same checkout, alternating which arm goes
+first. Both arms get the same model, the same read-only tools and no other MCP
+servers. Only the "with" arm gets the BaleContext server and its instructions.
+Token counts come from Claude Code's own JSON result for the whole task, every
+model call included. Answers are saved side by side so a person can judge
+quality; this script never decides that an answer is correct.
+
+This uses your Claude plan limits. Nothing in the checkout is modified.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import shutil
+import statistics
+import subprocess
+import sys
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+from balecontext.integrations import INSTRUCTIONS  # noqa: E402
+from balecontext.store import Project  # noqa: E402
+
+READ_TOOLS = ["Read", "Grep", "Glob", "LS"]
+WRITE_TOOLS = ["Edit", "MultiEdit", "Write", "NotebookEdit", "Bash"]
+USAGE_FIELDS = ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens")
+
+
+def instructions() -> str:
+    # One line: Windows passes `claude.cmd` arguments through cmd.exe, which breaks on newlines.
+    return " ".join(line.strip() for line in re.sub(r"<!--.*?-->", "", INSTRUCTIONS).splitlines() if line.strip())
+
+
+def refuse_contaminated(checkout: Path) -> None:
+    """A BaleContext block already in the project would leak into the 'without' arm."""
+    for name in ("CLAUDE.md", ".mcp.json", ".claude/settings.json", ".claude/settings.local.json"):
+        path = checkout / name
+        if path.is_file() and "balecontext" in path.read_text(encoding="utf-8", errors="replace").lower():
+            raise SystemExit(f"{path} mentions BaleContext, so the 'without' run would not be clean. "
+                             "Use a checkout without it (or remove it for the test) and run again.")
+
+
+def command(arm: str, args, mcp_config: Path) -> list[str]:
+    claude = shutil.which("claude")
+    if not claude:
+        raise SystemExit("The `claude` command was not found. Install Claude Code and sign in first.")
+    line = [claude, "-p", "--output-format", "json", "--model", args.model, "--max-turns", str(args.max_turns),
+            "--strict-mcp-config", "--disallowedTools", *WRITE_TOOLS]
+    allowed = list(READ_TOOLS)
+    if arm == "with":
+        line += ["--mcp-config", str(mcp_config), "--append-system-prompt", instructions()]
+        allowed.append("mcp__balecontext")
+    return line + ["--allowedTools", *allowed]
+
+
+def run_arm(arm: str, args, question: str, mcp_config: Path, out: Path, number: int) -> dict:
+    started = time.monotonic()
+    completed = subprocess.run(command(arm, args, mcp_config), input=question, capture_output=True, text=True,
+                               encoding="utf-8", cwd=args.checkout, timeout=args.timeout)
+    seconds = round(time.monotonic() - started, 1)
+    raw = completed.stdout.strip()
+    (out / f"run{number}-{arm}.json").write_text(raw + "\n", encoding="utf-8")
+    try:
+        data = json.loads(raw.splitlines()[-1]) if raw else {}
+    except json.JSONDecodeError:
+        data = {}
+    if not data or completed.returncode != 0 and not data.get("usage"):
+        (out / f"run{number}-{arm}.stderr.txt").write_text(completed.stderr, encoding="utf-8")
+        raise SystemExit(f"Run {number} ({arm}) failed; see {out}. First error line: {(completed.stderr or raw).strip()[:300]}")
+    usage = data.get("usage") or {}
+    row = {field: int(usage.get(field) or 0) for field in USAGE_FIELDS}
+    row.update({
+        "arm": arm, "run": number,
+        "total_tokens": sum(row[field] for field in USAGE_FIELDS),
+        "cost_usd_estimate": data.get("total_cost_usd"),
+        "turns": data.get("num_turns"),
+        "seconds": seconds,
+        "error": data.get("is_error", False) or data.get("subtype") not in (None, "success"),
+    })
+    (out / f"run{number}-{arm}.answer.md").write_text(str(data.get("result", "")), encoding="utf-8")
+    return row
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("checkout", type=Path)
+    parser.add_argument("--question-file", type=Path, required=True)
+    parser.add_argument("--runs", type=int, default=3, help="Pairs to run (default 3)")
+    parser.add_argument("--model", default="sonnet", help="Same model for both arms (default sonnet)")
+    parser.add_argument("--max-turns", type=int, default=40)
+    parser.add_argument("--timeout", type=int, default=1200, help="Seconds per run")
+    parser.add_argument("--out", type=Path, help="Results folder (default: claude-pair-results/<time> next to this script)")
+    args = parser.parse_args(argv)
+    args.checkout = args.checkout.resolve()
+    question = args.question_file.read_text(encoding="utf-8").strip()
+    if not question:
+        raise SystemExit("The question file is empty.")
+    refuse_contaminated(args.checkout)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    out = (args.out or Path(__file__).resolve().parent / "claude-pair-results" / stamp).resolve()
+    out.mkdir(parents=True, exist_ok=True)
+    print("Indexing the checkout once before the runs (no model calls)...")
+    Project(args.checkout).index()
+    mcp_config = out / "balecontext-mcp.json"
+    mcp_config.write_text(json.dumps({"mcpServers": {"balecontext": {
+        "command": sys.executable, "args": ["-m", "balecontext", "mcp", "--root", str(args.checkout)]}}}, indent=2), encoding="utf-8")
+    (out / "question.txt").write_text(question + "\n", encoding="utf-8")
+    rows = []
+    for number in range(1, args.runs + 1):
+        order = ("with", "without") if number % 2 else ("without", "with")
+        for arm in order:
+            print(f"Run {number}: {arm} BaleContext...")
+            rows.append(run_arm(arm, args, question, mcp_config, out, number))
+            print(f"  {rows[-1]['total_tokens']:,} tokens, {rows[-1]['turns']} turns, {rows[-1]['seconds']}s")
+    summary = {}
+    for arm in ("without", "with"):
+        mine = [row for row in rows if row["arm"] == arm]
+        costs = [row["cost_usd_estimate"] for row in mine if isinstance(row["cost_usd_estimate"], (int, float))]
+        summary[arm] = {
+            "median_total_tokens": statistics.median(row["total_tokens"] for row in mine),
+            "median_cost_usd_estimate": statistics.median(costs) if costs else None,
+            "median_turns": statistics.median(row["turns"] for row in mine) if all(isinstance(row["turns"], int) for row in mine) else None,
+            "errors": sum(bool(row["error"]) for row in mine),
+        }
+    base, assisted = summary["without"], summary["with"]
+    summary["token_saving_percent"] = round(100 * (1 - assisted["median_total_tokens"] / base["median_total_tokens"]), 1) if base["median_total_tokens"] else None
+    if base["median_cost_usd_estimate"] and assisted["median_cost_usd_estimate"] is not None:
+        summary["cost_saving_percent"] = round(100 * (1 - assisted["median_cost_usd_estimate"] / base["median_cost_usd_estimate"]), 1)
+    summary["note"] = ("Whole-task totals from Claude Code's JSON result. Cost is Claude Code's own estimate, the closest "
+                       "proxy for plan limits. Judge answer quality by reading the saved answers; savings mean nothing "
+                       "if the 'with' answers are worse.")
+    (out / "summary.json").write_text(json.dumps({"summary": summary, "rows": rows}, indent=2), encoding="utf-8")
+    print(f"\n{'run':>3} {'arm':8} {'total':>10} {'input':>8} {'cache_wr':>9} {'cache_rd':>10} {'output':>7} {'turns':>5} {'cost$':>7}")
+    for row in rows:
+        cost = f"{row['cost_usd_estimate']:.3f}" if isinstance(row["cost_usd_estimate"], (int, float)) else "-"
+        print(f"{row['run']:>3} {row['arm']:8} {row['total_tokens']:>10,} {row['input_tokens']:>8,} {row['cache_creation_input_tokens']:>9,} "
+              f"{row['cache_read_input_tokens']:>10,} {row['output_tokens']:>7,} {row['turns'] if row['turns'] is not None else '-':>5} {cost:>7}")
+    print(json.dumps(summary, indent=2))
+    print(f"\nAnswers and raw results: {out}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

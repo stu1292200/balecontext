@@ -33,14 +33,22 @@ def evaluate(project: Project, question: dict, budget: int) -> dict:
     elapsed = time.monotonic() - started
     shown = [_key(source) for source in response["sources"]]
     listed = {_key(item) for item in response.get("map", [])} | set(shown)
+    # Aliases (`res.set = res.header = function ...`) share one range: the same code was shown.
+    with project.connect() as db:
+        ranges = {(r["name"], r["path"]): (r["start"], r["end"]) for r in db.execute("SELECT name,path,start,end FROM nodes")}
+
+    def same(a: tuple[str, str], b: tuple[str, str]) -> bool:
+        return a == b or (a[1] == b[1] and a in ranges and ranges.get(a) == ranges.get(b))
+
     entry = _key(question["entry"])
     gold = [_key(item) for item in question["gold"]]
+    entry_rank = next((index + 1 for index, key in enumerate(shown) if same(key, entry)), None)
     return {
         "id": question["id"],
-        "entry_rank": shown.index(entry) + 1 if entry in shown else None,
-        "gold_shown": sum(item in shown for item in gold) / len(gold),
-        "gold_listed": sum(item in listed for item in gold) / len(gold),
-        "missing": [f"{path}:{name}" for name, path in gold if (name, path) not in listed],
+        "entry_rank": entry_rank,
+        "gold_shown": sum(any(same(item, key) for key in shown) for item in gold) / len(gold),
+        "gold_listed": sum(any(same(item, key) for key in listed) for item in gold) / len(gold),
+        "missing": [f"{path}:{name}" for name, path in gold if not any(same((name, path), key) for key in listed)],
         "estimated_tokens": response["estimated_tokens"],
         "verdict": response.get("verdict", "n/a"),
         "seconds": round(elapsed, 2),

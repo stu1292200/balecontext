@@ -41,6 +41,13 @@ task, regression tests, source citation correctness, and blinded review of the
 patches/answers. Repeat runs to estimate variance. Publish the corpus, tasks,
 model settings, logs with secrets removed, denominators and exclusions.
 
+## Paired Claude Code test (uses plan limits)
+
+`benchmarks/claude_pair.py` asks Claude Code the same question with and without
+BaleContext, alternating order, with identical models and read-only tools, and
+records whole-task tokens from Claude Code's own JSON result. Answers are saved
+side by side for a person to judge. Steps: [docs/claude-code-test.md](../docs/claude-code-test.md).
+
 ## Offline relevance check (no model calls)
 
 Before any paid agent comparison, check that retrieval finds the right code:
@@ -48,10 +55,16 @@ Before any paid agent comparison, check that retrieval finds the right code:
 ```sh
 python benchmarks/relevance.py PATH/TO/django benchmarks/relevance/django.json
 python benchmarks/relevance.py PATH/TO/requests benchmarks/relevance/requests.json
+python benchmarks/relevance.py PATH/TO/express benchmarks/relevance/express.json
+python benchmarks/relevance.py PATH/TO/hono benchmarks/relevance/hono.json
 ```
 
 Each question file pins a repository commit and lists the definitions a correct
-answer must cite (written before ranking was tuned). The script reports whether
+answer must cite. The Django and requests sets were written before ranking was
+tuned; the Express (JavaScript) and Hono (TypeScript) sets were written before
+any JavaScript or TypeScript change, so their first run measured untuned
+behaviour. A gold item counts as shown when a shown definition covers the same
+lines (aliases such as `res.set = res.header = function ...`). The script reports whether
 the expected entry point is the first source, how much of the gold evidence is
 shown as source or listed by id, the response size, and the coverage verdict.
 

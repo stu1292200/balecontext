@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import importlib.util
 import tempfile
 import unittest
 from pathlib import Path
 
 from balecontext import rank
+from balecontext.extract import extract, resolve
 from balecontext.mcp import Server
 from balecontext.retrieve import context, estimate, expand
 from balecontext.store import Project
@@ -187,6 +189,119 @@ class RankingTest(unittest.TestCase):
         for bad in ([], [1], "id"):
             error = call("tools/call", {"name": "balecontext_expand", "arguments": {"ids": bad}})
             self.assertTrue(error["result"]["isError"])
+
+
+RESPONSE_JS = """var res = Object.create(http.ServerResponse.prototype);
+
+res.send = function send(body) {
+  this.set('Content-Type', 'text/html');
+  return this.end(body);
+};
+
+res.set =
+res.header = function header(field, val) {
+  this.setHeader(field, val);
+  return this;
+};
+
+res.render = function render(view, options) {
+  var app = this.req.app;
+  app.render(view, options);
+};
+
+View.prototype.lookup = function lookup(name) {
+  return name;
+};
+"""
+
+APPLICATION_JS = """var app = exports = module.exports = {};
+
+app.render = function render(name, options) {
+  return tryRender(name, options);
+};
+
+function tryRender(view, options) {
+  return view;
+}
+"""
+
+ROUTER_TS = """export class Router {
+  #node: Node = new Node()
+  fetch = (request: Request): Response => {
+    return this.#dispatch(request)
+  }
+  #dispatch(request: Request): Response {
+    return this.#node.search(request)
+  }
+}
+"""
+
+JS_PARSERS = all(importlib.util.find_spec(m) for m in ("tree_sitter", "tree_sitter_javascript", "tree_sitter_typescript"))
+
+
+@unittest.skipUnless(JS_PARSERS, "Optional JS/TS parsers not installed")
+class JavaScriptTest(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix="balecontext-js-")
+        self.root = Path(self.temporary.name).resolve()
+        for name, text in {"lib/response.js": RESPONSE_JS, "lib/application.js": APPLICATION_JS, "src/router.ts": ROUTER_TS,
+                           "src/node.ts": "export class Node {\n  search(request: Request): Response {\n    return new Response()\n  }\n}\n"}.items():
+            target = self.root / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(text, encoding="utf-8")
+        self.project = Project(self.root)
+
+    def tearDown(self):
+        self.temporary.cleanup()
+
+    def test_prototype_assignments_and_class_fields_are_definitions(self):
+        names = {node.name for node in extract("lib/response.js", RESPONSE_JS).nodes}
+        self.assertTrue({"res.send", "res.header", "res.set", "res.render", "View.lookup"} <= names)
+        names = {node.name for node in extract("lib/application.js", APPLICATION_JS).nodes}
+        self.assertTrue({"app.render", "tryRender"} <= names)
+        names = {node.name for node in extract("src/router.ts", ROUTER_TS).nodes}
+        self.assertTrue({"Router", "Router.fetch", "Router.#dispatch"} <= names)
+
+    def test_calls_resolve_through_this_and_across_files(self):
+        response = context(self.project, "How does res.render render a view?")
+        names = [source["name"] for source in response["sources"]]
+        self.assertEqual(names[0], "res.render")
+        self.assertIn("app.render", names)
+        response = context(self.project, "How does res.send set the header?")
+        self.assertEqual(response["sources"][0]["name"], "res.send")
+        self.assertTrue({"res.set", "res.header"} & {source["name"] for source in response["sources"]})
+
+    def test_unfollowed_calls_keep_the_verdict_partial(self):
+        response = context(self.project, "How does Router fetch dispatch a request?")
+        names = [source["name"] for source in response["sources"]]
+        self.assertEqual(names[:2], ["Router.fetch", "Router.#dispatch"])
+        self.assertEqual(response["verdict"], "PARTIAL")
+        self.assertIn("calls not followed: this.#node.search", response["text"])
+
+
+class ResolveTest(unittest.TestCase):
+    def test_bare_call_inside_a_method_is_not_the_method(self):
+        source = "def parse(text):\n    return text\n\nclass Request:\n    def parse(self):\n        return parse(self)\n"
+        result = extract("request.py", source)
+        nodes = [node.dict() for node in result.nodes]
+        edges = resolve(nodes, result.refs)
+        by_id = {node["id"]: node for node in nodes}
+        calls = {(by_id[e["source"]]["name"], by_id[e["target"]]["name"]) for e in edges if e["relation"] == "calls" and e["target"] in by_id}
+        self.assertIn(("Request.parse", "parse"), calls)
+        self.assertNotIn(("Request.parse", "Request.parse"), calls)
+
+    def test_entry_is_the_outermost_matching_function(self):
+        temporary = tempfile.TemporaryDirectory(prefix="balecontext-root-")
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        (root / "csrf.py").write_text(
+            "class CsrfMiddleware:\n"
+            "    def _check_token(self, request):\n        return self._get_token(request)\n\n"
+            "    def _get_token(self, request):\n        return request\n\n"
+            "    def process_view(self, request):\n        if request.method == 'POST':\n            return self._check_token(request)\n",
+            encoding="utf-8")
+        response = context(Project(root), "How does CsrfMiddleware check the token on a POST request?")
+        self.assertEqual(response["sources"][0]["name"], "CsrfMiddleware.process_view")
 
 
 if __name__ == "__main__":
