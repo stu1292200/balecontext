@@ -41,6 +41,20 @@ task, regression tests, source citation correctness, and blinded review of the
 patches/answers. Repeat runs to estimate variance. Publish the corpus, tasks,
 model settings, logs with secrets removed, denominators and exclusions.
 
+## Offline relevance check (no model calls)
+
+Before any paid agent comparison, check that retrieval finds the right code:
+
+```sh
+python benchmarks/relevance.py PATH/TO/django benchmarks/relevance/django.json
+python benchmarks/relevance.py PATH/TO/requests benchmarks/relevance/requests.json
+```
+
+Each question file pins a repository commit and lists the definitions a correct
+answer must cite (written before ranking was tuned). The script reports whether
+the expected entry point is the first source, how much of the gold evidence is
+shown as source or listed by id, the response size, and the coverage verdict.
+
 `query --json` reports the size of retrieved text using UTF-8 bytes divided by
 four. This is a rough context-size estimate. Comparing it with the entire corpus
 does **not** measure end-to-end token savings, agent subscription allowances, or

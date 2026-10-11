@@ -41,7 +41,7 @@ def parser() -> argparse.ArgumentParser:
             sub.add_argument("--json", action="store_true", help="Machine-readable JSON output")
         if command == "query":
             sub.add_argument("query")
-            sub.add_argument("--budget", type=int, default=2000, help="Approximate text tokens (UTF-8 bytes / 4); not exact provider tokens")
+            sub.add_argument("--budget", type=int, default=3000, help="Approximate text tokens (UTF-8 bytes / 4); not exact provider tokens")
         elif command == "related":
             sub.add_argument("name")
             sub.add_argument("--direction", choices=["both", "callers", "dependencies"], default="both")

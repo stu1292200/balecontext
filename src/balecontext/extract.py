@@ -40,8 +40,8 @@ def file_id(path: str) -> str:
     return hashlib.sha256(f"{path}\0{path}\0file\0{1}".encode()).hexdigest()[:24]
 
 
-def edge(source: str, target: str, relation: str, evidence: str = "EXTRACTED") -> dict:
-    return {"source": source, "target": target, "relation": relation, "evidence": evidence}
+def edge(source: str, target: str, relation: str, evidence: str = "EXTRACTED", line: int | None = None) -> dict:
+    return {"source": source, "target": target, "relation": relation, "evidence": evidence, "line": line}
 
 
 def _base(path: str, text: str) -> Extraction:
@@ -106,6 +106,19 @@ class PythonExtractor(ast.NodeVisitor):
 
     def visit_Call(self, node: ast.Call) -> None:
         self._ref(ast.unparse(node.func), "calls", self.stack[-1].id, node.lineno)
+        if isinstance(node.func, ast.Attribute):
+            # The callee attribute is already recorded as a call, not as a property use.
+            self.visit(node.func.value)
+        else:
+            self.visit(node.func)
+        for child in [*node.args, *node.keywords]:
+            self.visit(child)
+
+    def visit_Attribute(self, node: ast.Attribute) -> None:
+        # `self.errors` on a property runs code; resolution keeps it only when the
+        # attribute is a method or property defined on the same class.
+        if isinstance(node.ctx, ast.Load) and isinstance(node.value, ast.Name) and node.value.id in {"self", "cls"} and self.class_stack:
+            self._ref(f"{node.value.id}.{node.attr}", "uses", self.stack[-1].id, node.lineno)
         self.generic_visit(node)
 
     def _import(self, module: str, symbol: str, alias: str, line: int) -> None:
@@ -265,7 +278,7 @@ def resolve(nodes: list[dict], refs: list[dict]) -> list[dict]:
         if target:
             destination = symbol(target, imported_symbol) if imported_symbol else files[target]["id"]
             if destination:
-                edges.append(edge(ref["source"], destination, "imports"))
+                edges.append(edge(ref["source"], destination, "imports", line=ref.get("line")))
             bindings[(path, ref.get("scope", ""), ref["name"])] = (target, imported_symbol)
     for ref in refs:
         if ref["relation"] == "imports":
@@ -287,6 +300,12 @@ def resolve(nodes: list[dict], refs: list[dict]) -> list[dict]:
                 target, imported = binding
                 qualified = ".".join(filter(None, [imported, suffix]))
                 destination = symbol(target, qualified)
+        if not destination and ref.get("class_name") and name.count(".") == 1 and not name.startswith(("self.", "cls.", "this.")):
+            # `clone._filter_or_exclude_inplace()` inside QuerySet: a local object calling a method
+            # that only this class defines. Labelled INFERRED like every resolved call.
+            head, attr = name.split(".")
+            if not any(bindings.get((path, ".".join(scope_parts[:length]), head)) for length in range(len(scope_parts), -1, -1)):
+                destination = symbol(path, ref["class_name"] + "." + attr)
         if destination:
-            edges.append(edge(ref["source"], destination, ref["relation"], "INFERRED"))
+            edges.append(edge(ref["source"], destination, ref["relation"], "INFERRED", ref.get("line")))
     return list({(e["source"], e["target"], e["relation"]): e for e in edges}.values())

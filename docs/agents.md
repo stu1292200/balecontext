@@ -25,7 +25,7 @@ To verify a client:
 1. Install the package and run `balecontext doctor`.
 2. Run the project installer or copy `config generic` into that client's supported settings.
 3. Restart the client and complete its project trust/server approval flow.
-4. Confirm it lists all four BaleContext tools.
+4. Confirm it lists all five BaleContext tools.
 5. Ask for a known symbol; verify the cited path and lines.
 6. Modify the source, query again, and verify the updated excerpt.
 7. Ask a question with no matching index evidence; confirm the agent expands its search.

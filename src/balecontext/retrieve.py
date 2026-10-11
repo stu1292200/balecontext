@@ -1,12 +1,14 @@
-"""Lexical retrieval plus bounded graph expansion; source is always evidence."""
+"""Symbol-first retrieval that returns compact evidence packs; source is always evidence."""
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import math
 import re
 from collections import deque
 
+from . import rank
 from .files import SECRET_CONTENT
 from .store import Project
 
@@ -20,8 +22,8 @@ def estimate(text: str) -> int:
 
 
 def validate_budget(budget: int) -> None:
-    if isinstance(budget, bool) or not isinstance(budget, int) or not 256 <= budget <= 32_000:
-        raise ValueError("Budget must be an integer between 256 and 32000 estimated tokens.")
+    if isinstance(budget, bool) or not isinstance(budget, int) or not 256 <= budget <= 8_000:
+        raise ValueError("Budget must be an integer between 256 and 8000 estimated tokens.")
 
 
 def terms(query: str) -> list[str]:
@@ -88,66 +90,327 @@ def _uncovered_excerpt(row: dict, occupied: list[tuple[int, int]], words: list[s
     return result
 
 
-def context(project: Project, query: str, budget: int = 2000) -> dict:
+FIRST_RESPONSE_CAP = 4000
+LONG_BODY = 60
+HELPER_BODY = 30
+_TABLES: dict[str, tuple[str, rank.SymbolTable]] = {}
+
+
+def _symbol_table(project: Project, db) -> rank.SymbolTable:
+    generation = (db.execute("SELECT value FROM metadata WHERE key='generation'").fetchone() or ["0"])[0]
+    cached = _TABLES.get(str(project.db_path))
+    if cached and cached[0] == generation:
+        return cached[1]
+    table = rank.SymbolTable(db.execute("SELECT id,path,name,kind,start,end FROM nodes"))
+    _TABLES[str(project.db_path)] = (generation, table)
+    return table
+
+
+def _docstrings(content: str) -> dict[int, tuple[int, int]]:
+    """Map a definition's first line to its docstring line range (Python only)."""
+    try:
+        tree = ast.parse(content)
+    except (SyntaxError, ValueError, RecursionError):
+        return {}
+    ranges: dict[int, tuple[int, int]] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node.body:
+            first = node.body[0]
+            if isinstance(first, ast.Expr) and isinstance(getattr(first, "value", None), ast.Constant) and isinstance(first.value.value, str):
+                for line in [node.lineno] + [d.lineno for d in node.decorator_list]:
+                    ranges[line] = (first.lineno, first.end_lineno)
+    return ranges
+
+
+class _Files:
+    def __init__(self, db):
+        self.db = db
+        self.lines: dict[str, list[str]] = {}
+        self.docs: dict[str, dict[int, tuple[int, int]]] = {}
+
+    def get(self, path: str) -> list[str]:
+        if path not in self.lines:
+            row = self.db.execute("SELECT content FROM files WHERE path=?", (path,)).fetchone()
+            content = row[0] if row else ""
+            self.lines[path] = content.splitlines()
+            self.docs[path] = _docstrings(content) if path.endswith((".py", ".pyi")) else {}
+        return self.lines[path]
+
+
+def _render_body(files: _Files, item: dict, max_lines: int) -> tuple[list[tuple[int, str]], bool, str]:
+    """Return numbered lines, whether the definition is shown in full, and a trailing note."""
+    lines = files.get(item["path"])
+    start, end = item["start"], min(item["end"], len(lines))
+    numbered = [(n, lines[n - 1]) for n in range(start, end + 1)]
+    note = ""
+    if item["kind"] == "class":
+        children = [r for r in files.db.execute("SELECT name,start FROM nodes WHERE path=? AND kind='method' AND start>? AND end<=? ORDER BY start", (item["path"], start, end))]
+        header_end = (children[0]["start"] - 1) if children else end
+        numbered = [(n, text) for n, text in numbered if n <= header_end][:25]
+        if children:
+            note = "[Methods: " + ", ".join(r["name"].rsplit(".", 1)[-1] for r in children[:40]) + "]"
+        return numbered, True, note
+    doc = files.docs.get(item["path"], {}).get(item["start"])
+    if doc and doc[1] - doc[0] >= 2:
+        kept = [(n, text) for n, text in numbered if not doc[0] < n <= doc[1]]
+        first = next(((n, text) for n, text in numbered if n == doc[0]), None)
+        if first is not None:
+            index = kept.index(first)
+            kept[index] = (first[0], first[1].rstrip() + f"  [docstring lines {doc[0] + 1}-{doc[1]} not shown]")
+        numbered = kept
+    complete = True
+    if len(numbered) > max_lines:
+        numbered = numbered[:max_lines]
+        complete = False
+    return numbered, complete, note
+
+
+def _source_block(item: dict, numbered: list[tuple[int, str]], role: str, complete: bool, note: str) -> str:
+    heading = json.dumps({"id": item["id"], "path": item["path"], "lines": [item["start"], item["end"]], "name": item["name"], "kind": item["kind"], "role": role}, ensure_ascii=False)
+    body = "\n".join(f"{n}: {text}" for n, text in numbered)
+    tail = ""
+    if not complete:
+        shown_to = numbered[-1][0] if numbered else item["start"]
+        tail = f"\n[Excerpt ends at line {shown_to} of {item['end']}; fetch the rest with balecontext_expand ids=[\"{item['id']}\"].]"
+    return f"SOURCE {heading}\n{body}{tail}" + (f"\n{note}" if note else "")
+
+
+def _map_line(item: dict, role: str) -> str:
+    return f"- {item['name']} ({item['kind']}) {item['path']}:{item['start']}-{item['end']} [{role}] id={item['id']}"
+
+
+def _callees(db, node_id: str, path: str) -> list[dict]:
+    rows = db.execute(
+        "SELECT n.id,n.path,n.name,n.kind,n.start,n.end,e.line FROM edges e JOIN nodes n ON n.id=e.target "
+        "WHERE e.source=? AND e.relation IN ('calls','uses') AND n.path=? ORDER BY e.line, n.start", (node_id, path))
+    return [dict(r) for r in rows]
+
+
+def _callers(db, node_id: str) -> list[dict]:
+    rows = db.execute(
+        "SELECT n.id,n.path,n.name,n.kind,n.start,n.end,e.line FROM edges e JOIN nodes n ON n.id=e.source "
+        "WHERE e.target=? AND e.relation IN ('calls','uses') AND n.kind NOT IN ('file','chunk') ORDER BY n.path, n.start LIMIT 20", (node_id,))
+    return [dict(r) for r in rows]
+
+
+def _body_matches(db, query: str) -> list[dict]:
+    try:
+        return _matches(db, query, 60)
+    except ValueError:
+        return []
+
+
+def context(project: Project, query: str, budget: int = 3000, session: dict | None = None) -> dict:
+    """Build an evidence pack: a map, the entry point and its callees in call order, and a coverage verdict."""
     validate_budget(budget)
     terms(query)
     project.index()
+    limit = min(budget, FIRST_RESPONSE_CAP)
+    parsed = rank.parse(query)
     with project.connect() as db:
-        matches = _matches(db, query)
-        candidate_ids = {row["id"] for row in matches}
-        candidates = [(row, "query match") for row in matches]
-        # Add imports/callers/dependencies rather than every child of a large file.
-        for seed in matches[:6]:
-            neighbors = db.execute("SELECT * FROM edges WHERE (source=? OR target=?) AND relation NOT IN ('contains','defines') ORDER BY relation,target LIMIT 16", (seed["id"], seed["id"])).fetchall()
-            for relation in neighbors:
-                other = relation["target"] if relation["source"] == seed["id"] else relation["source"]
-                if other not in candidate_ids:
-                    row = db.execute("SELECT * FROM nodes WHERE id=?", (other,)).fetchone()
-                    if row:
-                        candidates.append((dict(row), f"{relation['relation']} / {relation['evidence']}"))
-                        candidate_ids.add(other)
-        # Reserve space for evidence links/metadata; final response is also checked.
-        sections = [NOTICE]
-        used: list[dict] = []
-        ranges: dict[str, list[tuple[int, int]]] = {}
-        query_words = terms(query)
-        for row, reason in candidates:
-            occupied = ranges.setdefault(row["path"], [])
-            row = _uncovered_excerpt(row, occupied, query_words)
-            if row is None:
-                continue
-            displayed_end = min(row["end"], row["start"] + len(row["snippet"].splitlines()) - 1)
-            block = _format_node(row, reason)
-            if estimate("\n\n".join(sections + [block])) > budget - 160:
-                # Keep an exact prefix rather than a model-generated summary.
-                short = dict(row)
-                while short["snippet"] and estimate("\n\n".join(sections + [_format_node(short, reason)])) > budget - 160:
-                    short["snippet"] = "\n".join(short["snippet"].splitlines()[:-1])
-                if not short["snippet"]:
+        table = _symbol_table(project, db)
+        body = _body_matches(db, query)
+        body_scores = {row["id"]: 40.0 * (1 - index / max(1, len(body))) for index, row in enumerate(body) if row["kind"] not in {"file", "chunk"}}
+        ranked = rank.score(table, parsed, body_scores)
+        seeds = rank.pick_seeds(parsed, ranked)
+        files = _Files(db)
+        # Planned order: each seed followed by what it calls, in the order it calls them.
+        planned: list[tuple[dict, str]] = []
+        planned_ids: set[str] = set()
+
+        def plan(item: dict, role: str) -> None:
+            if item["id"] not in planned_ids:
+                planned_ids.add(item["id"])
+                planned.append((item, role))
+
+        query_words = set(parsed.words)
+
+        def walk(item: dict, depth: int) -> None:
+            # Breadth first in call order, but callees named like the question or the
+            # caller ("save" -> "save_base") come before generic helpers.
+            level = [item]
+            for _ in range(depth):
+                following = []
+                for parent in level:
+                    parent_tokens = {rank.stem(t) for t in rank.split_identifier(parent["name"].rsplit(".", 1)[-1])}
+                    callees = [c for c in _callees(db, parent["id"], parent["path"]) if c["id"] not in planned_ids]
+                    parent_leaf = parent["name"].rsplit(".", 1)[-1].lstrip("_").lower()
+
+                    def priority(c: dict) -> tuple:
+                        leaf = c["name"].rsplit(".", 1)[-1].lstrip("_").lower()
+                        tokens = {rank.stem(t) for t in rank.split_identifier(leaf)}
+                        # `save` -> `save_base` continues the same operation; shared words come next.
+                        return (not leaf.startswith(parent_leaf), -len(tokens & (query_words | parent_tokens)), c.get("line") or 0)
+
+                    callees.sort(key=priority)
+                    for callee in callees:
+                        if callee["id"] not in planned_ids:
+                            plan(callee, f"called by {parent['name']} at line {callee['line']}" if callee.get("line") else f"used by {parent['name']}")
+                            following.append(callee)
+                level = following
+
+        for position, (_, entry, matched) in enumerate(seeds):
+            item = {"id": entry.id, "path": entry.path, "name": entry.name, "kind": entry.kind, "start": entry.start, "end": entry.end}
+            plan(item, "entry" if position == 0 else ("matches " + ", ".join(sorted(matched)) if matched else "match"))
+            if entry.kind != "class":
+                walk(item, 4 if position == 0 else 1)
+        related_items: list[tuple[dict, str]] = []
+        if seeds:
+            entry = seeds[0][1]
+            for caller in _callers(db, entry.id)[:3]:
+                if caller["id"] not in planned_ids:
+                    related_items.append((caller, f"calls {entry.name} at line {caller['line']}" if caller.get("line") else f"uses {entry.name}"))
+            for _, other, _ in ranked[:40]:
+                if other.category in {"test", "doc"} and other.id not in planned_ids and sum(r.startswith("related") for _, r in related_items) < 2:
+                    related_items.append(({"id": other.id, "path": other.path, "name": other.name, "kind": other.kind, "start": other.start, "end": other.end}, f"related {other.category}"))
+        seed_ids = {entry.id for _, entry, _ in seeds}
+        header = f"BALECONTEXT EVIDENCE PACK. Query read as {parsed.describe()}."
+        session_sent = session.setdefault("sent", {}) if session is not None else {}
+        map_lines = [_map_line(item, role) for item, role in planned + related_items]
+        footer_reserve = min(120 + estimate("\n".join(map_lines[:20])), limit // 4)
+        # Helpers are first shown up to HELPER_BODY lines; if that leaves budget unused,
+        # the pack is rebuilt once with longer helpers so it can be complete.
+        for helper_lines in (HELPER_BODY, LONG_BODY):
+            sections: list[str] = [header, NOTICE]
+            used: list[dict] = []
+            omitted: list[tuple[dict, str]] = []
+            truncated: list[str] = []
+            sent = {path: list(spans) for path, spans in session_sent.items()}
+            occupied: dict[str, list[tuple[int, int]]] = {}
+            for item, role in planned:
+                ranges = occupied.setdefault(item["path"], [])
+                if any(a <= item["start"] and item["end"] <= b for a, b in ranges):
                     continue
-                row, block = short, _format_node(short, reason)
-                displayed_end = row["start"] + len(row["snippet"].splitlines()) - 1
-            sections.append(block)
-            used.append({k: row[k] for k in ("id", "path", "name", "start", "end")})
-            occupied.append((row["start"], displayed_end))
-        evidence_edges = []
-        chosen = {n["id"] for n in used}
-        for relation in db.execute("SELECT * FROM edges ORDER BY source,target"):
-            if relation["source"] in chosen and relation["target"] in chosen:
-                line = "LINK " + json.dumps(dict(relation), separators=(",", ":"))
-                if estimate("\n\n".join(sections + [line])) <= budget - 80:
-                    sections.append(line)
-                    evidence_edges.append(dict(relation))
-        for memory in _valid_memories(db):
-            if any(word in memory["text"].lower() for word in terms(query)):
-                block = "SAVED NOTE (user supplied, untrusted): " + json.dumps(memory, ensure_ascii=False)
-                if estimate("\n\n".join(sections + [block])) <= budget - 80:
-                    sections.append(block)
+                if any(a <= item["start"] and item["end"] <= b for a, b in sent.get(item["path"], [])):
+                    sections.append(f"SOURCE ALREADY SENT IN THIS SESSION: {item['name']} {item['path']}:{item['start']}-{item['end']} id={item['id']}")
+                    used.append({k: item[k] for k in ("id", "path", "name", "start", "end")})
+                    continue
+                numbered, complete, note = _render_body(files, item, LONG_BODY if item["id"] in seed_ids else helper_lines)
+                numbered = [(n, text) for n, text in numbered if not any(a <= n <= b for a, b in ranges)]
+                if not numbered:
+                    continue
+                block = _source_block(item, numbered, role, complete, note)
+                while numbered and estimate("\n\n".join(sections + [block])) > limit - footer_reserve:
+                    numbered = numbered[:-1]
+                    complete = False
+                    block = _source_block(item, numbered, role, complete, note)
+                if len(numbered) < 3 and len(numbered) < item["end"] - item["start"] + 1 and used:
+                    omitted.append((item, role))
+                    continue
+                sections.append(block)
+                if not complete:
+                    truncated.append(item["name"])
+                used.append({k: item[k] for k in ("id", "path", "name", "start", "end")})
+                shown = (numbered[0][0], numbered[-1][0])
+                # A class header covers only its header lines, never its methods.
+                whole = complete and item["kind"] != "class"
+                ranges.append((item["start"], item["end"]) if whole else shown)
+                sent.setdefault(item["path"], []).append((item["start"], item["end"]) if whole else shown)
+            if not truncated or estimate("\n\n".join(sections)) > 0.7 * (limit - footer_reserve):
+                break
+        if session is not None:
+            session["sent"] = sent
+        if not seeds:
+            # No symbol matched by name: fall back to exact text excerpts around matching lines.
+            words = terms(query)
+            for row in body:
+                ranges = occupied.setdefault(row["path"], [])
+                excerpt = _uncovered_excerpt(row, ranges, words)
+                if excerpt is None:
+                    continue
+                block = _format_node(excerpt, "text match")
+                while excerpt["snippet"] and estimate("\n\n".join(sections + [block])) > limit - 120:
+                    excerpt["snippet"] = "\n".join(excerpt["snippet"].splitlines()[:-1])
+                    block = _format_node(excerpt, "text match")
+                if not excerpt["snippet"]:
+                    break
+                sections.append(block)
+                shown_end = excerpt["start"] + len(excerpt["snippet"].splitlines()) - 1
+                used.append({"id": excerpt["id"], "path": excerpt["path"], "name": excerpt["name"], "start": excerpt["start"], "end": excerpt["end"]})
+                ranges.append((excerpt["start"], shown_end))
+        shown_ids = {u["id"] for u in used}
+        listed = [line for line in map_lines]
+        not_included = [(item, role) for item, role in planned if item["id"] not in shown_ids] + omitted
+        # Same-file definitions called by shown code but not shown keep the verdict honest.
+        for shown_item in used:
+            for callee in _callees(db, shown_item["id"], shown_item["path"]):
+                if callee["id"] not in shown_ids and not any(a <= callee["start"] and callee["end"] <= b for a, b in occupied.get(callee["path"], [])):
+                    not_included.append((callee, f"called by {shown_item['name']} at line {callee['line']}"))
+        not_included = list({item["id"]: (item, role) for item, role in not_included}.values())
+        unresolved = [i.text for i in parsed.identifiers if not any(i.text in matched for _, _, matched in seeds)]
         if not used:
-            sections.append("No matching source found. Broaden the query or use the agent's normal search; do not infer absence from this result.")
-        text = "\n\n".join(sections)
+            verdict = "NONE"
+            coverage = "COVERAGE: NONE. No matching source found. Broaden the query or use the agent's normal search; do not infer absence from this result."
+        elif truncated or not_included or unresolved or not seeds:
+            verdict = "PARTIAL"
+            gaps = []
+            if truncated:
+                gaps.append("cut short: " + ", ".join(truncated))
+            if not_included:
+                gaps.append("not included: " + ", ".join(item["name"] for item, _ in not_included[:8]))
+            if unresolved:
+                gaps.append("no definition found for: " + ", ".join(unresolved))
+            if not seeds:
+                gaps.append("matched by text only")
+            coverage = "COVERAGE: PARTIAL (" + "; ".join(gaps) + "). Fetch listed ids with balecontext_expand, or read the specific lines."
+        else:
+            verdict = "COMPLETE"
+            coverage = "COVERAGE: COMPLETE. The entry point and every definition it calls in the same file are shown in full above. Answer from this evidence; read further only for behaviour outside these definitions."
+        tail: list[str] = []
+        if listed:
+            tail.append("MAP (shown above, related, or available by id):\n" + "\n".join(listed[:20]))
+        tail.append(coverage)
+        while tail and estimate("\n\n".join(sections + tail)) > limit and listed:
+            listed = listed[:-1]
+            tail[0] = "MAP (shown above, related, or available by id):\n" + "\n".join(listed) if listed else ""
+            tail = [t for t in tail if t]
+        text = "\n\n".join(sections + tail)
+        chosen = shown_ids
+        evidence_edges = [dict(r) for r in db.execute("SELECT * FROM edges ORDER BY source,target") if r["source"] in chosen and r["target"] in chosen and r["relation"] not in ("defines", "contains")] if chosen else []
         baseline = sum(len(row[0].encode("utf-8")) for row in db.execute("SELECT content FROM files"))
-        return {"text": text, "sources": used, "edges": evidence_edges, "estimated_tokens": estimate(text), "budget": budget, "token_method": "ceil(UTF-8 bytes / 4); estimate only", "eligible_corpus_estimated_tokens": math.ceil(baseline / 4), "measurement_note": "Context size only. This is not total model-token savings or subscription usage."}
+        map_items = [{k: item[k] for k in ("id", "path", "name", "start", "end")} | {"role": role} for item, role in planned + related_items]
+        return {"text": text, "sources": used, "map": map_items, "edges": evidence_edges, "verdict": verdict, "estimated_tokens": estimate(text), "budget": limit, "token_method": "ceil(UTF-8 bytes / 4); estimate only", "eligible_corpus_estimated_tokens": math.ceil(baseline / 4), "measurement_note": "Context size only. This is not total model-token savings or subscription usage."}
+
+
+def expand(project: Project, ids: list[str], budget: int = 4000, session: dict | None = None) -> dict:
+    """Return the full source of specific definitions named by id (docstrings included)."""
+    validate_budget(budget)
+    if not isinstance(ids, list) or not ids or len(ids) > 20 or not all(isinstance(i, str) and i for i in ids):
+        raise ValueError("Provide 1 to 20 node ids from a previous BaleContext response.")
+    project.index()
+    with project.connect() as db:
+        files = _Files(db)
+        sections = [NOTICE]
+        used, missing, truncated = [], [], []
+        sent = session.setdefault("sent", {}) if session is not None else {}
+        for identifier in dict.fromkeys(ids):
+            row = db.execute("SELECT id,path,name,kind,start,end FROM nodes WHERE id=?", (identifier,)).fetchone()
+            if not row:
+                missing.append(identifier)
+                continue
+            item = dict(row)
+            lines = files.get(item["path"])
+            numbered = [(n, lines[n - 1]) for n in range(item["start"], min(item["end"], len(lines), item["start"] + 199) + 1)]
+            complete = len(numbered) == item["end"] - item["start"] + 1
+            block = _source_block(item, numbered, "expanded", complete, "")
+            while numbered and estimate("\n\n".join(sections + [block])) > budget - 80:
+                numbered = numbered[:-1]
+                complete = False
+                block = _source_block(item, numbered, "expanded", complete, "")
+            if not numbered:
+                truncated.append(item["name"])
+                break
+            sections.append(block)
+            used.append({k: item[k] for k in ("id", "path", "name", "start", "end")})
+            sent.setdefault(item["path"], []).append((numbered[0][0], numbered[-1][0]))
+            if not complete:
+                truncated.append(item["name"])
+        if missing:
+            sections.append("Unknown ids (the index may have changed; run balecontext_context again): " + ", ".join(missing))
+        if truncated:
+            sections.append("Cut short by the budget: " + ", ".join(truncated) + ". Use balecontext_read for exact line ranges.")
+        text = "\n\n".join(sections)
+        return {"text": text, "sources": used, "estimated_tokens": estimate(text), "budget": budget}
 
 
 def find_node(db, name: str) -> dict:

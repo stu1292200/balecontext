@@ -108,16 +108,23 @@ Once connected, try:
 > Use BaleContext to find the session-token validation code and its callers.
 > Cite source locations. Read additional source if the excerpts are incomplete.
 
-Four tools are exposed: `balecontext_context`, `balecontext_related`,
-`balecontext_read`, and `balecontext_status`. They do not edit your source files
-or run shell commands. The local SQLite cache refreshes before retrieval.
+Five tools are exposed: `balecontext_context`, `balecontext_expand`,
+`balecontext_related`, `balecontext_read`, and `balecontext_status`. They do not
+edit your source files or run shell commands. The local SQLite cache refreshes
+before retrieval.
+
+`balecontext_context` returns an evidence pack: a map of the matching
+definitions, the entry point and the definitions it calls in call order (exact
+source with line numbers), and a `COVERAGE: COMPLETE` or `PARTIAL` verdict. The
+first response is capped at 4,000 estimated tokens. Missing pieces are fetched by
+id with `balecontext_expand` instead of re-reading whole files.
 
 ## What you get
 
 | Capability | Behavior |
 |---|---|
 | Incremental index | Content hashes skip unchanged files; removed or newly excluded files disappear from the index. |
-| Focused retrieval | Local full-text search ranks exact source excerpts and expands selected dependency links. |
+| Focused retrieval | Symbol-first ranking (exact identifiers and class qualifiers before body text, implementation code before tests and docs), then the entry point's call chain in call order. |
 | Evidence | Every source result includes a path, symbol ID and line range. |
 | Dependency graph | Python AST and optional JS/TS tree-sitter parsing; imports and conservative call resolution. |
 | Cross-session notes | Explicitly saved notes reference file hashes; stale notes are excluded automatically. |

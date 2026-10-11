@@ -11,7 +11,7 @@ from pathlib import Path
 from .extract import extract, resolve
 from .files import discover
 
-SCHEMA = 1
+SCHEMA = 2
 
 
 class Project:
@@ -33,8 +33,16 @@ class Project:
         db.row_factory = sqlite3.Row
         try:
             db.execute("PRAGMA journal_mode=WAL")
+            db.execute("CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+            version = db.execute("SELECT value FROM metadata WHERE key='schema'").fetchone()
+            if version and int(version[0]) != SCHEMA:
+                # Derived tables are rebuilt from source; saved notes are kept.
+                db.executescript("""
+                    DROP TABLE IF EXISTS files; DROP TABLE IF EXISTS nodes; DROP TABLE IF EXISTS refs;
+                    DROP TABLE IF EXISTS edges; DROP TABLE IF EXISTS search;
+                    DELETE FROM metadata WHERE key='schema';
+                """)
             db.executescript("""
-                CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS files (
                     path TEXT PRIMARY KEY, hash TEXT NOT NULL, parser TEXT NOT NULL,
                     content TEXT NOT NULL, warnings TEXT NOT NULL);
@@ -45,15 +53,13 @@ class Project:
                 CREATE TABLE IF NOT EXISTS refs (path TEXT NOT NULL, payload TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS edges (
                     source TEXT NOT NULL, target TEXT NOT NULL, relation TEXT NOT NULL, evidence TEXT NOT NULL,
-                    PRIMARY KEY(source, target, relation));
+                    line INTEGER, PRIMARY KEY(source, target, relation));
+                CREATE INDEX IF NOT EXISTS edges_source ON edges(source);
                 CREATE INDEX IF NOT EXISTS edges_target ON edges(target);
                 CREATE VIRTUAL TABLE IF NOT EXISTS search USING fts5(id UNINDEXED, name, path, snippet);
                 CREATE TABLE IF NOT EXISTS memories (
                     id INTEGER PRIMARY KEY, text TEXT NOT NULL, citations TEXT NOT NULL, created REAL NOT NULL);
             """)
-            version = db.execute("SELECT value FROM metadata WHERE key='schema'").fetchone()
-            if version and int(version[0]) != SCHEMA:
-                raise ValueError("Index schema is incompatible; move .balecontext aside and index again.")
             db.execute("INSERT OR IGNORE INTO metadata VALUES ('schema', ?)", (str(SCHEMA),))
             db.commit()
             yield db
@@ -103,7 +109,9 @@ class Project:
                             parent = min(parents, key=lambda n: n["end"] - n["start"]) if parents else file_node
                             edges.append({"source": parent["id"], "target": node["id"], "relation": "contains" if node["kind"] == "chunk" else "defines", "evidence": "EXTRACTED"})
                     db.execute("DELETE FROM edges")
-                    db.executemany("INSERT OR IGNORE INTO edges VALUES (?, ?, ?, ?)", [(e["source"], e["target"], e["relation"], e["evidence"]) for e in edges])
+                    db.executemany("INSERT OR IGNORE INTO edges VALUES (?, ?, ?, ?, ?)", [(e["source"], e["target"], e["relation"], e["evidence"], e.get("line")) for e in edges])
+                if changed or removed or not db.execute("SELECT 1 FROM metadata WHERE key='generation'").fetchone():
+                    db.execute("INSERT OR REPLACE INTO metadata VALUES ('generation', ?)", (str(time.time_ns()),))
                 db.execute("INSERT OR REPLACE INTO metadata VALUES ('last_index', ?)", (str(time.time()),))
                 db.execute("INSERT OR REPLACE INTO metadata VALUES ('skipped', ?)", (json.dumps(skipped),))
             stats = self._stats(db)

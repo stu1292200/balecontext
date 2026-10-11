@@ -45,7 +45,7 @@ records remain in the local database for audit; there is no automatic model
 summary or self-reinforcing answer ingestion.
 
 The MCP server uses newline-delimited UTF-8 JSON-RPC on stdio. It advertises
-four bounded tools and emits no non-protocol stdout. Workspaces are pinned at
+five bounded tools and emits no non-protocol stdout. Workspaces are pinned at
 process startup. Tool arguments cannot select a different root or execute code.
 
 The HTML viewer embeds escaped JSON, uses textContent for project-controlled

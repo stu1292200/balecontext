@@ -253,7 +253,7 @@ class WorkspaceTest(unittest.TestCase):
         self.assertIn("\\u003c/script", html)
         self.assertNotIn("https://", html)
         graph = json.loads(Path(result["graph"]).read_text(encoding="utf-8"))
-        self.assertEqual(graph["schema_version"], 1)
+        self.assertEqual(graph["schema_version"], 2)
         self.assertTrue(all("group" in n for n in graph["nodes"]))
 
     def test_install_preserves_other_servers_and_is_idempotent(self):
@@ -291,7 +291,7 @@ class WorkspaceTest(unittest.TestCase):
         init = call("initialize", {"protocolVersion": "2025-11-25"})
         self.assertEqual(init["result"]["protocolVersion"], "2025-11-25")
         self.assertIsNone(server.handle({"jsonrpc": "2.0", "method": "notifications/initialized"}))
-        self.assertEqual(len(call("tools/list")["result"]["tools"]), 4)
+        self.assertEqual(len(call("tools/list")["result"]["tools"]), 5)
         result = call("tools/call", {"name": "balecontext_context", "arguments": {"query": "validate"}})
         self.assertFalse(result["result"]["isError"])
         self.assertIn("validate_token", result["result"]["content"][0]["text"])
