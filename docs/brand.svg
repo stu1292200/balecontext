@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="460" viewBox="0 0 1440 460" role="img" aria-labelledby="title desc">
+<title id="title">BaleContext</title><desc id="desc">Local project knowledge for AI coding agents. Created by Muhammad Baleegh.</desc>
+<rect width="1440" height="460" rx="24" fill="#101512"/>
+<g fill="none" stroke="#344a32" stroke-width="2"><path d="M1040 90 1160 175 1050 295 1260 340 1330 170 1160 175 1260 340M1040 90 1330 170M1050 295 1160 175"/></g>
+<g fill="#caef84"><circle cx="1040" cy="90" r="7"/><circle cx="1160" cy="175" r="12"/><circle cx="1260" cy="340" r="8"/></g>
+<g fill="#8ac6d0"><circle cx="1050" cy="295" r="8"/><circle cx="1330" cy="170" r="7"/></g>
+<path d="M94 100v86h36a23 23 0 0 0 0-46h-25m0 0h22a20 20 0 0 0 0-40H94" fill="none" stroke="#caef84" stroke-width="9" stroke-linecap="round"/><circle cx="164" cy="108" r="9" fill="#8ac6d0"/>
+<text x="80" y="274" fill="#edf2e9" font-family="Segoe UI,Arial,sans-serif" font-size="76" font-weight="600" letter-spacing="-3">BaleContext</text>
+<text x="84" y="327" fill="#a0ada2" font-family="Segoe UI,Arial,sans-serif" font-size="27">Local project knowledge for AI coding agents.</text>
+<text x="84" y="398" fill="#caef84" font-family="Segoe UI,Arial,sans-serif" font-size="17" letter-spacing="2">LOCAL · SOURCE-BACKED · OPEN SOURCE</text>
+</svg>

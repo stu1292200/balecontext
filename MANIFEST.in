@@ -1,0 +1,8 @@
+include LICENSE README.md CHANGELOG.md CONTRIBUTING.md ROADMAP.md SECURITY.md
+recursive-include docs *.md *.svg
+recursive-include benchmarks *.py *.md
+recursive-include examples *.py *.md
+recursive-include tests *.py
+recursive-include scripts *.cjs
+recursive-include .github *.yml *.md
+global-exclude *.py[cod]
