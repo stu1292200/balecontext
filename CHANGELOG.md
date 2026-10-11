@@ -30,7 +30,11 @@
   definition with one makes the verdict PARTIAL ("calls not followed: ...") instead of
   claiming COMPLETE. Type declarations rank below behaviour. Index schema 4.
 - `benchmarks/claude_pair.py` and [docs/claude-code-test.md](docs/claude-code-test.md):
-  a paired Claude Code test with and without BaleContext.
+  a paired Claude Code test with and without BaleContext, recording every tool call.
+- `balecontext hook claude` and `install claude --hook`: a Claude Code prompt hook that
+  hands the model BaleContext's evidence before its first turn when the prompt names
+  project code (kept under Claude Code's 10,000-character hook limit). It never indexes
+  a folder that was not already indexed and never blocks a prompt.
 - Start local background indexing with an initialized agent MCP connection.
   Handle edits, additions, renames, deletions and new exclusions without a query.
   Add `mcp --watch-interval` and `--no-watch`; per-request refresh remains enabled.

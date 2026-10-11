@@ -467,7 +467,9 @@ def context(project: Project, query: str, budget: int = 3000, session: dict | No
         evidence_edges = [dict(r) for r in db.execute("SELECT * FROM edges ORDER BY source,target") if r["source"] in chosen and r["target"] in chosen and r["relation"] not in ("defines", "contains")] if chosen else []
         baseline = sum(len(row[0].encode("utf-8")) for row in db.execute("SELECT content FROM files"))
         map_items = [{k: item[k] for k in ("id", "path", "name", "start", "end")} | {"role": role} for item, role in planned + related_items]
-        return {"text": text, "sources": used, "map": map_items, "edges": evidence_edges, "verdict": verdict, "estimated_tokens": estimate(text), "budget": limit, "token_method": "ceil(UTF-8 bytes / 4); estimate only", "eligible_corpus_estimated_tokens": math.ceil(baseline / 4), "measurement_note": "Context size only. This is not total model-token savings or subscription usage."}
+        # A lead matched by an identifier or by words of its own name, not only by body text.
+        strong = bool(seeds) and bool(seeds[0][2] or set(parsed.words) & seeds[0][1].leaf_tokens or set(parsed.words) & seeds[0][1].name_tokens)
+        return {"text": text, "sources": used, "map": map_items, "edges": evidence_edges, "verdict": verdict, "strong": strong, "entry_identifier": bool(seeds and seeds[0][2]), "estimated_tokens": estimate(text), "budget": limit, "token_method": "ceil(UTF-8 bytes / 4); estimate only", "eligible_corpus_estimated_tokens": math.ceil(baseline / 4), "measurement_note": "Context size only. This is not total model-token savings or subscription usage."}
 
 
 def expand(project: Project, ids: list[str], budget: int = 4000, session: dict | None = None) -> dict:

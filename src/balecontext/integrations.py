@@ -49,7 +49,32 @@ def _write(path, text: str) -> None:
             os.unlink(temporary)
 
 
-def install(project: Project, agent: str, dry_run: bool = False) -> dict:
+def hook_settings() -> dict:
+    """Claude Code UserPromptSubmit hook, run without a shell so paths with spaces work."""
+    return {"type": "command", "command": sys.executable, "args": ["-m", "balecontext", "hook", "claude"], "timeout": 30}
+
+
+def _install_hook(project: Project, dry_run: bool) -> list[str]:
+    path = safe_path(project.root, ".claude/settings.json")
+    original = path.read_text(encoding="utf-8") if path.exists() else ""
+    settings = json.loads(original) if original.strip() else {}
+    if not isinstance(settings, dict) or not isinstance(settings.get("hooks", {}), dict):
+        raise ValueError(".claude/settings.json must contain an object of hooks.")
+    groups = settings.setdefault("hooks", {}).setdefault("UserPromptSubmit", [])
+    if not isinstance(groups, list):
+        raise ValueError("UserPromptSubmit hooks must be a list.")
+    present = any(isinstance(h, dict) and h.get("args", [])[-2:] == ["hook", "claude"] for g in groups if isinstance(g, dict) for h in g.get("hooks", []))
+    if present:
+        return []
+    groups.append({"hooks": [hook_settings()]})
+    if not dry_run:
+        _write(path, json.dumps(settings, indent=2, ensure_ascii=False) + "\n")
+    return [".claude/settings.json"]
+
+
+def install(project: Project, agent: str, dry_run: bool = False, hook: bool = False) -> dict:
+    if hook and agent != "claude":
+        raise ValueError("The prompt hook is available for Claude Code only. No configuration was changed.")
     destinations = {"claude": (".mcp.json", "CLAUDE.md"), "codex": (".codex/config.toml", "AGENTS.md"), "gemini": (".gemini/settings.json", "GEMINI.md"), "cursor": (".cursor/mcp.json", "AGENTS.md")}
     if agent not in destinations:
         raise ValueError("Use claude, codex, gemini, or cursor. Other clients can use the config command.")
@@ -85,4 +110,6 @@ def install(project: Project, agent: str, dry_run: bool = False) -> dict:
             changes.append(path.relative_to(project.root).as_posix())
             if not dry_run:
                 _write(path, content)
+    if hook:
+        changes += _install_hook(project, dry_run)
     return {"agent": agent, "dry_run": dry_run, "changed": changes, "config": proposed, "next": "Restart the client, approve its project trust prompt if appropriate, then check its MCP server list. End-to-end client compatibility must be verified in that client."}

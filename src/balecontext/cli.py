@@ -35,6 +35,7 @@ def parser() -> argparse.ArgumentParser:
         "remember": "Save a note tied to current source hashes",
         "watch": "Refresh the index when source files change",
         "doctor": "Check parser and SQLite capabilities",
+        "hook": "Prompt-time hook for a client (reads the client's hook JSON on stdin)",
     }.items():
         sub = commands.add_parser(command, help=help_text)
         sub.add_argument("--root", default=".", help="Project directory (default: current directory)")
@@ -62,6 +63,9 @@ def parser() -> argparse.ArgumentParser:
             sub.add_argument("agent", choices=["claude", "codex", "gemini", "cursor", "generic"] if command == "config" else ["claude", "codex", "gemini", "cursor"])
             if command == "install":
                 sub.add_argument("--dry-run", action="store_true")
+                sub.add_argument("--hook", action="store_true", help="Claude Code only: also hand BaleContext evidence to the model on each prompt")
+        elif command == "hook":
+            sub.add_argument("client", choices=["claude"])
         elif command == "remember":
             sub.add_argument("text")
             sub.add_argument("--source", action="append", required=True, dest="sources")
@@ -76,6 +80,9 @@ def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
+    if args.command == "hook":
+        from .hook import run_claude
+        return run_claude()  # Never index a new folder or fail the prompt from a hook.
     try:
         project = Project(args.root)
         if args.command == "mcp":
@@ -104,7 +111,7 @@ def main(argv: list[str] | None = None) -> int:
             print(configuration(project, args.agent))
             return 0
         elif args.command == "install":
-            result = install(project, args.agent, args.dry_run)
+            result = install(project, args.agent, args.dry_run, args.hook)
         elif args.command == "remember":
             result = save_memory(project, args.text, args.sources)
         elif args.command == "watch":

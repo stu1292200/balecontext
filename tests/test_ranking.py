@@ -309,5 +309,59 @@ class ResolveTest(unittest.TestCase):
         self.assertEqual(response["sources"][0]["name"], "CsrfMiddleware.process_view")
 
 
+class HookTest(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix="balecontext-hook-")
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name).resolve()
+        target = self.root / "django/forms/forms.py"
+        target.parent.mkdir(parents=True)
+        target.write_text(FORMS, encoding="utf-8")
+
+    def run_hook(self, prompt: str, cwd: Path) -> str:
+        import io
+        import json
+        from balecontext.hook import run_claude
+        output = io.StringIO()
+        self.assertEqual(run_claude(io.StringIO(json.dumps({"prompt": prompt, "cwd": str(cwd)})), output), 0)
+        return output.getvalue()
+
+    def test_unindexed_folder_is_never_indexed_by_the_hook(self):
+        self.assertEqual(self.run_hook(PROSE, self.root), "")
+        self.assertFalse((self.root / ".balecontext").exists())
+
+    def test_code_question_gets_evidence_and_chat_gets_nothing(self):
+        import json
+        Project(self.root).index()
+        output = json.loads(self.run_hook(PROSE, self.root / "django" / "forms"))["hookSpecificOutput"]
+        self.assertEqual(output["hookEventName"], "UserPromptSubmit")
+        self.assertIn("def is_valid", output["additionalContext"])
+        self.assertIn("COVERAGE: COMPLETE", output["additionalContext"])
+        self.assertLessEqual(len(output["additionalContext"]), 9500)
+        for chat in ("thanks, looks good", "/clear", "please run the build again"):
+            self.assertEqual(self.run_hook(chat, self.root), "")
+        log = (self.root / ".balecontext" / "hook-log.jsonl").read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(log), 4)
+
+    def test_installer_adds_the_hook_once_and_keeps_other_settings(self):
+        import json
+        from balecontext.integrations import install
+        settings = self.root / ".claude/settings.json"
+        settings.parent.mkdir()
+        settings.write_text(json.dumps({"permissions": {"allow": ["Read"]}}), encoding="utf-8")
+        project = Project(self.root)
+        first = install(project, "claude", hook=True)
+        self.assertIn(".claude/settings.json", first["changed"])
+        second = install(project, "claude", hook=True)
+        self.assertNotIn(".claude/settings.json", second["changed"])
+        data = json.loads(settings.read_text(encoding="utf-8"))
+        self.assertEqual(data["permissions"], {"allow": ["Read"]})
+        self.assertEqual(len(data["hooks"]["UserPromptSubmit"]), 1)
+        self.assertEqual(data["hooks"]["UserPromptSubmit"][0]["hooks"][0]["args"][-2:], ["hook", "claude"])
+        with self.assertRaises(ValueError):
+            install(project, "codex", hook=True)
+        self.assertFalse((self.root / ".codex").exists())
+
+
 if __name__ == "__main__":
     unittest.main()
