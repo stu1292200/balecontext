@@ -53,7 +53,7 @@ def command(arm: str, args, mcp_config: Path) -> list[str]:
     claude = shutil.which("claude")
     if not claude:
         raise SystemExit("The `claude` command was not found. Install Claude Code and sign in first.")
-    line = [claude, "-p", "--output-format", "json", "--model", args.model, "--max-turns", str(args.max_turns),
+    line = [claude, "-p", "--output-format", "stream-json", "--verbose", "--model", args.model, "--max-turns", str(args.max_turns),
             "--strict-mcp-config", "--disallowedTools", *WRITE_TOOLS]
     allowed = list(READ_TOOLS)
     if arm == "with":
@@ -68,11 +68,28 @@ def run_arm(arm: str, args, question: str, mcp_config: Path, out: Path, number: 
                                encoding="utf-8", cwd=args.checkout, timeout=args.timeout)
     seconds = round(time.monotonic() - started, 1)
     raw = completed.stdout.strip()
-    (out / f"run{number}-{arm}.json").write_text(raw + "\n", encoding="utf-8")
-    try:
-        data = json.loads(raw.splitlines()[-1]) if raw else {}
-    except json.JSONDecodeError:
-        data = {}
+    (out / f"run{number}-{arm}.jsonl").write_text(raw + "\n", encoding="utf-8")
+    events = []
+    for line in raw.splitlines():
+        try:
+            events.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    data = next((event for event in reversed(events) if event.get("type") == "result"), {})
+    # Every tool call in order, so a run explains its own turns.
+    calls = []
+    for event in events:
+        if event.get("type") == "assistant":
+            for block in (event.get("message") or {}).get("content") or []:
+                if isinstance(block, dict) and block.get("type") == "tool_use":
+                    calls.append(f"{block.get('name')} {json.dumps(block.get('input'), ensure_ascii=False)[:300]}")
+        elif event.get("type") == "user":
+            for block in (event.get("message") or {}).get("content") or []:
+                if isinstance(block, dict) and block.get("type") == "tool_result":
+                    content = block.get("content")
+                    text = content if isinstance(content, str) else json.dumps(content, ensure_ascii=False)
+                    calls.append(f"  -> result {len(text):,} chars" + (" (COVERAGE: " + text.split("COVERAGE: ", 1)[1][:8].split(".")[0] + ")" if "COVERAGE: " in text else ""))
+    (out / f"run{number}-{arm}.tools.txt").write_text("\n".join(calls) + "\n", encoding="utf-8")
     if not data or completed.returncode != 0 and not data.get("usage"):
         (out / f"run{number}-{arm}.stderr.txt").write_text(completed.stderr, encoding="utf-8")
         raise SystemExit(f"Run {number} ({arm}) failed; see {out}. First error line: {(completed.stderr or raw).strip()[:300]}")
@@ -84,6 +101,7 @@ def run_arm(arm: str, args, question: str, mcp_config: Path, out: Path, number: 
         "cost_usd_estimate": data.get("total_cost_usd"),
         "turns": data.get("num_turns"),
         "seconds": seconds,
+        "tool_calls": sum(not c.startswith("  ->") for c in calls),
         "error": data.get("is_error", False) or data.get("subtype") not in (None, "success"),
     })
     (out / f"run{number}-{arm}.answer.md").write_text(str(data.get("result", "")), encoding="utf-8")
