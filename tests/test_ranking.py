@@ -409,6 +409,35 @@ class HookTest(unittest.TestCase):
         rest = saved.read_text(encoding="utf-8")
         self.assertIn("=== shop.py:", rest)
         self.assertIn("COVERAGE: ", rest)
+        # The entry's own chain stays whole in the file; blank lines are dropped.
+        self.assertIn("order.total += 39  # adjust the order total", rest)
+        self.assertNotRegex(rest, r"(?m)^\d+: *$")
+
+    def test_saved_file_outlines_calls_outside_the_chain_and_names_their_helpers(self):
+        steps = "".join(f"def step_{i}(order):\n" + "".join(f"    order.total += {j}  # adjust the order total\n" for j in range(40)) + "    return order\n\n" for i in range(8))
+        entry = "def checkout_order(order, gateway):\n" + "".join(f"    order = step_{i}(order)\n" for i in range(8)) + "    gateway.settle_account(order)\n    return order\n"
+        (self.root / "shop.py").write_text(steps + entry, encoding="utf-8")
+        (self.root / "billing.py").write_text(
+            "class PaymentGateway:\n"
+            '    def audit_ledger(self, order):\n        """Write the order to the audit ledger."""\n' + "".join(f"        order.audit += {j}\n" for j in range(5)) + "        return order\n\n"
+            "    def settle_account(self, order):\n        # settle_marker() is only a comment\n        balance = order.total * 2\n" + "".join(f"        balance += {j}\n" for j in range(35))
+            + "        if balance > 100:\n            self.audit_ledger(order)\n        return balance\n", encoding="utf-8")
+        from balecontext import hook
+        project = Project(self.root)
+        project.index()
+        text, response = hook.prompt_pack(project, "How does checkout_order work?")
+        rest = Path(response["overflow_path"]).read_text(encoding="utf-8")
+        outline = rest[rest.index("=== billing.py:11-51 PaymentGateway.settle_account"):]
+        outline = outline[:outline.index("\n\n")]
+        # A long call followed outside the chain keeps its signature, branches, calls and return.
+        for kept in ("11: def settle_account(self, order):", "49:     if balance > 100:", "50:         self.audit_ledger(order)", "51:     return balance", "[Outline of lines 11-51"):
+            self.assertIn(kept, outline)
+        for dropped in ("balance += 3", "settle_marker"):
+            self.assertNotIn(dropped, outline)
+        # Its own helper is named in one line with the start of its docstring, not shown in full.
+        self.assertIn("billing.py:2-9 PaymentGateway.audit_ledger (called by PaymentGateway.settle_account at line 50): Write the order to the audit ledger.", rest)
+        self.assertNotIn("order.audit += 3", rest)
+        self.assertEqual([s["name"] for s in response["overflow_sources"] if s["path"] == "billing.py"], ["PaymentGateway.settle_account"])
 
     def test_installer_adds_the_hook_once_and_keeps_other_settings(self):
         import json

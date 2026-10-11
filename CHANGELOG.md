@@ -46,6 +46,13 @@
   instead of searching file by file (the last 20 files are kept). That larger pack
   (12,000-token budget) shows every followed call in full before any of their helpers,
   and its last line marks what is still missing as deeper detail to read only if needed.
+- The saved file is smaller, because it is written into the model's context on every new
+  question: the entry's own chain stays whole, a long call followed outside it that the
+  question does not name is shown as an outline (signature, calls, branches, returns),
+  helpers of followed calls are named in one line with the start of their docstring, and
+  a definition cut short in the pack continues from where it stopped instead of repeating.
+  Blank lines are dropped from all hook text (line numbers stay exact). The requests trace
+  file drops from about 34,000 to 21,000 characters.
 - Calling a class follows its constructor (`Request(...)` → `Request.__init__`); a class
   without one is left out instead of showing its header. Parameter lists of eight or more
   lines collapse to one line naming the parameters.

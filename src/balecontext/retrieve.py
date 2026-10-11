@@ -490,8 +490,11 @@ def context(project: Project, query: str, budget: int = 3000, session: dict | No
                 elsewhere.append((item, role))
         # A large pack (the hook's saved file) shows every followed call before the helpers of any
         # one of them, so a trace keeps its breadth (Session.send's hooks, cookies and redirects).
+        helper_ids: set[str] = set()
         for item in deferred:
+            before = set(planned_ids)
             walk(item, 2)
+            helper_ids |= planned_ids - before
         related_items: list[tuple[dict, str]] = []
         if seeds:
             entry = seeds[0][1]
@@ -626,7 +629,10 @@ def context(project: Project, query: str, budget: int = 3000, session: dict | No
         map_items = [{k: item[k] for k in ("id", "path", "name", "start", "end")} | {"role": role} for item, role in planned + related_items]
         # A lead matched by an identifier or by words of its own name, not only by body text.
         strong = bool(seeds) and bool(seeds[0][2] or set(parsed.words) & seeds[0][1].leaf_tokens or set(parsed.words) & seeds[0][1].name_tokens)
-        return {"text": text, "sources": used, "map": map_items, "edges": evidence_edges, "verdict": verdict, "strong": strong, "entry_identifier": bool(seeds and seeds[0][2]), "estimated_tokens": estimate(text), "budget": limit, "token_method": "ceil(UTF-8 bytes / 4); estimate only", "eligible_corpus_estimated_tokens": math.ceil(baseline / 4), "measurement_note": "Context size only. This is not total model-token savings or subscription usage."}
+        # The hook's saved file shows the entry's own chain in full, outlines long calls followed
+        # outside it, and lists helpers of those calls by name.
+        omitted_items = [{k: item[k] for k in ("id", "path", "name", "start", "end")} | {"role": role} for item, role in not_included]
+        return {"text": text, "sources": used, "map": map_items, "chain": sorted(chain_ids), "helpers": sorted(helper_ids), "not_included": omitted_items, "edges": evidence_edges, "verdict": verdict, "strong": strong, "entry_identifier": bool(seeds and seeds[0][2]), "estimated_tokens": estimate(text), "budget": limit, "token_method": "ceil(UTF-8 bytes / 4); estimate only", "eligible_corpus_estimated_tokens": math.ceil(baseline / 4), "measurement_note": "Context size only. This is not total model-token savings or subscription usage."}
 
 
 def expand(project: Project, ids: list[str], budget: int = 4000, session: dict | None = None) -> dict:
