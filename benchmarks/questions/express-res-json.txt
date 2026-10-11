@@ -1,0 +1,1 @@
+Explain what Express's res.json() does with the object it is given, and which app settings change how it is serialized. Cite the relevant source files and line numbers. Do not modify any files.

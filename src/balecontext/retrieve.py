@@ -94,6 +94,8 @@ FIRST_RESPONSE_CAP = 4000
 # Definitions followed where the chain leaves the entry's file (other modules, overrides).
 OUTWARD_LIMIT = 4
 LONG_BODY = 60
+# A last rebuild shows long definitions whole when the budget still has room.
+FULL_BODY = 160
 HELPER_BODY = 30
 _TABLES: dict[str, tuple[str, rank.SymbolTable]] = {}
 
@@ -434,7 +436,7 @@ def context(project: Project, query: str, budget: int = 3000, session: dict | No
         footer_reserve = min(120 + estimate("\n".join(map_lines[:20])), limit // 4)
         # Helpers are first shown up to HELPER_BODY lines; if that leaves budget unused,
         # the pack is rebuilt once with longer helpers so it can be complete.
-        for helper_lines in (HELPER_BODY, LONG_BODY):
+        for helper_lines in (HELPER_BODY, LONG_BODY, FULL_BODY):
             sections: list[str] = [header, NOTICE]
             used: list[dict] = []
             omitted: list[tuple[dict, str]] = []
@@ -449,7 +451,7 @@ def context(project: Project, query: str, budget: int = 3000, session: dict | No
                     sections.append(f"SOURCE ALREADY SENT IN THIS SESSION: {item['name']} {item['path']}:{item['start']}-{item['end']} id={item['id']}")
                     used.append({k: item[k] for k in ("id", "path", "name", "start", "end")})
                     continue
-                numbered, complete, note = _render_body(files, item, LONG_BODY if item["id"] in seed_ids or item["id"] in main_ids else helper_lines)
+                numbered, complete, note = _render_body(files, item, max(LONG_BODY, helper_lines) if item["id"] in seed_ids or item["id"] in main_ids else helper_lines)
                 numbered = [(n, text) for n, text in numbered if not any(a <= n <= b for a, b in ranges)]
                 if not numbered:
                     continue
@@ -495,7 +497,9 @@ def context(project: Project, query: str, budget: int = 3000, session: dict | No
                 ranges.append((excerpt["start"], shown_end))
         shown_ids = {u["id"] for u in used}
         listed = [line for line in map_lines]
-        not_included = [(item, role) for item, role in planned if item["id"] not in shown_ids] + omitted + elsewhere
+        # An alias (`res.contentType = res.type = function`) shares its range with one already shown.
+        not_included = [(item, role) for item, role in planned if item["id"] not in shown_ids
+                        and not any(a <= item["start"] and item["end"] <= b for a, b in occupied.get(item["path"], []))] + omitted + elsewhere
         # Same-file definitions called by shown code but not shown keep the verdict honest.
         # Definitions followed outside the main chain are shown to a fixed depth, not to closure.
         chain_ids = {item["id"] for item in main_chain}

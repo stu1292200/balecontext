@@ -1,0 +1,1 @@
+Trace what happens when requests' Session.request() sends an HTTP request, from building the request to returning the response. Cite the relevant source files and line numbers. Do not modify any files.

@@ -53,5 +53,23 @@ every model call included. Nothing in the Django folder is changed.
 5. Read the answers. The saving only counts if the BaleContext answers are
    as correct and complete as the "without" ones.
 
+### More questions
+
+The same script works on other projects. Each question below matches a set in
+`benchmarks/relevance/`, pinned to the commit the offline checks used:
+
+```
+git clone https://github.com/expressjs/express.git express-test
+git -C express-test checkout a419aa7
+py benchmarks\claude_pair.py C:\path\to\express-test --question-file benchmarks\questions\express-res-json.txt --runs 3
+
+git clone https://github.com/psf/requests.git requests-test
+git -C requests-test checkout 611c616
+py benchmarks\claude_pair.py C:\path\to\requests-test --question-file benchmarks\questions\requests-session-request.txt --runs 3
+```
+
+Offline, the hook sends a COMPLETE pack for the Express question and a PARTIAL
+one for the requests trace, which touches more of the library than fits.
+
 The results folder contains your local paths, so it is ignored by git; share
 `summary.json` and the answers by hand.

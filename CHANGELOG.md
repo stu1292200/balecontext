@@ -39,6 +39,8 @@
   without blocking a COMPLETE verdict. A candidate whose class is named like the
   receiver (`self.query.chain()` → `Query.chain`) wins over the others. The entry's own
   chain is shown at full length first. Index schema 6.
+- When budget remains, a last rebuild shows long definitions whole (up to 160
+  lines), and an alias sharing a shown range no longer counts as missing.
 - The prompt hook sends a compact pack (short source headings, shared indentation
   dropped, no query echo or id map) and starts from a larger budget, so more source fits
   under the hook limit.
