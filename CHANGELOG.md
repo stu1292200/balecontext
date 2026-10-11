@@ -58,6 +58,8 @@
   dropped, no query echo or id map) and starts from a larger budget, so more source fits
   under the hook limit.
   `benchmarks/relevance.py --hook` measures what the hook would send.
+- The paired test ends each task's prompt with a different number so later runs cannot
+  reuse an earlier run's cached conversation (`--same-prompt` restores the old behaviour).
 - `benchmarks/claude_pair.py` and [docs/claude-code-test.md](docs/claude-code-test.md):
   a paired Claude Code test with and without BaleContext, recording every tool call.
 - `balecontext hook claude` and `install claude --hook`: a Claude Code prompt hook that

@@ -44,7 +44,10 @@ every model call included. Nothing in the Django folder is changed.
 
    Three runs means six Claude Code tasks. Use `--runs 1` for a first look,
    but trust only three or more: Claude Code caches its instructions between
-   tasks, so a single run's cost depends on what ran just before it.
+   tasks, so a single run's cost depends on what ran just before it. Each
+   task's prompt ends with a different number so no task reuses another
+   task's cached conversation; `--same-prompt` turns that off (results before
+   this change used identical prompts, which flattered the hook's later runs).
 4. The script prints a table and the saving, and saves everything in
    `benchmarks\claude-pair-results\<time>\`: `summary.json`, each answer as
    `runN-<arm>.answer.md`, every tool call in `runN-<arm>.tools.txt`, and the

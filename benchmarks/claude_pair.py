@@ -9,7 +9,10 @@ MCP servers. Arms: "without" (plain Claude Code), "with" (BaleContext server and
 its instructions) and "hook" (only the prompt hook, which hands the model
 BaleContext's evidence before its first turn; system prompt and tools stay the
 same as "without", so cached-prompt pricing is comparable). Default: without,hook.
-Prompt caching makes a single run noisy: use --runs 3 or more.
+Prompt caching makes a single run noisy: use --runs 3 or more. Each task's prompt
+ends with a different number (BaleContext ignores it), so no task reuses another's
+cached conversation: a repeated identical prompt would make the deterministic hook
+arm look cheaper than a new question really is. --same-prompt turns that off.
 Token counts come from Claude Code's own JSON result for the whole task, every
 model call included. Answers are saved side by side so a person can judge
 quality; this script never decides that an answer is correct.
@@ -20,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import random
 import re
 import shutil
 import statistics
@@ -136,6 +140,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-turns", type=int, default=40)
     parser.add_argument("--timeout", type=int, default=1200, help="Seconds per run")
     parser.add_argument("--arms", default="without,hook", help="Comma-separated arms: without, with, hook (default without,hook)")
+    parser.add_argument("--same-prompt", action="store_true", help="Send the identical prompt every time (lets later runs reuse earlier runs' cache)")
     parser.add_argument("--out", type=Path, help="Results folder (default: claude-pair-results/<time> next to this script)")
     args = parser.parse_args(argv)
     args.checkout = args.checkout.resolve()
@@ -161,7 +166,9 @@ def main(argv: list[str] | None = None) -> int:
         shift = (number - 1) % len(arms)
         for arm in arms[shift:] + arms[:shift]:
             print(f"Run {number}: {arm}...")
-            rows.append(run_arm(arm, args, question, mcp_config, out, number))
+            # A number BaleContext's query parser ignores; it only stops cross-task cache reuse.
+            prompt = question if args.same_prompt else f"{question}\n\n#{random.randrange(10**5, 10**6)}"
+            rows.append(run_arm(arm, args, prompt, mcp_config, out, number))
             print(f"  {rows[-1]['total_tokens']:,} tokens, {rows[-1]['turns']} turns, {rows[-1]['seconds']}s")
     summary = {}
     for arm in arms:
