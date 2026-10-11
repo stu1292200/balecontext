@@ -82,7 +82,7 @@ def run_arm(arm: str, args, question: str, mcp_config: Path, out: Path, number: 
         new_lines = hook_log.read_text(encoding="utf-8").splitlines()[hook_lines:] if hook_log.exists() else []
         hook_ran = bool(new_lines)
         if not hook_ran:
-            print("  WARNING: the prompt hook did not run in this Claude Code version; this arm equals 'with'.")
+            print("  WARNING: the prompt hook did not run in this Claude Code version; this arm equals 'without'.")
         elif not any(json.loads(line).get("context_chars") for line in new_lines):
             print("  Note: the hook ran but found nothing to add for this question.")
     raw = completed.stdout.strip()
