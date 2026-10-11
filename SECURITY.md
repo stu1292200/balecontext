@@ -1,9 +1,9 @@
 # Security
 
 Do not post credentials, private indexes, source exports, or security-sensitive
-details in a public issue. A private reporting channel has not yet been set up;
-the maintainer must configure it before the public launch. Until then, avoid
-sharing exploit details publicly.
+details in a public issue. Use GitHub's private vulnerability reporting:
+
+https://github.com/stu1292200/balecontext/security/advisories/new
 
 The runtime is local. It does not fetch remote URLs, execute repository code,
 load repository plugins, or make model calls. File discovery skips links,

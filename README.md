@@ -24,7 +24,13 @@ target, not a measured result or guarantee.
 
 ## Install
 
-Requires Python 3.11 or newer. From a downloaded or cloned source checkout:
+Requires Python 3.11 or newer. Install the alpha release with JavaScript/TypeScript support:
+
+```sh
+python -m pip install "balecontext[code] @ https://github.com/stu1292200/balecontext/releases/download/v0.1.0/balecontext-0.1.0-py3-none-any.whl"
+```
+
+Or, from a downloaded or cloned source checkout:
 
 ```sh
 python -m pip install ".[code]"

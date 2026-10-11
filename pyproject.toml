@@ -19,6 +19,10 @@ classifiers = [
 ]
 dependencies = []
 
+[project.urls]
+Repository = "https://github.com/stu1292200/balecontext"
+Issues = "https://github.com/stu1292200/balecontext/issues"
+
 [project.optional-dependencies]
 code = ["tree-sitter>=0.25,<0.26", "tree-sitter-javascript>=0.25,<0.26", "tree-sitter-typescript>=0.23,<0.24"]
 
