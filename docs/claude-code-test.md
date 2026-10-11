@@ -25,8 +25,9 @@ and run `/mcp`: it should list five BaleContext tools.
 
 The script asks Claude Code the same question in the same Django folder in
 each setup ("arm"), and repeats that for each run. The arms are `without`
-(plain Claude Code), `with` (BaleContext's tools) and `hook` (BaleContext's
-tools plus the prompt hook). The default is `without,hook`; choose with
+(plain Claude Code), `with` (BaleContext's tools) and `hook` (only the prompt
+hook, so Claude Code's own instructions and tools stay identical to `without`
+and its cached-prompt pricing is comparable). The default is `without,hook`; choose with
 `--arms without,with,hook`. All arms use the same model and the same read-only tools (Read, Grep, Glob; no edits, no
 shell). Token totals come from Claude Code's own result for the whole task,
 every model call included. Nothing in the Django folder is changed.
@@ -41,7 +42,9 @@ every model call included. Nothing in the Django folder is changed.
    py benchmarks\claude_pair.py C:\path\to\django --question-file benchmarks\questions\django-form-is-valid.txt --runs 3 --model sonnet
    ```
 
-   Three runs means six Claude Code tasks. Use `--runs 1` for a first look.
+   Three runs means six Claude Code tasks. Use `--runs 1` for a first look,
+   but trust only three or more: Claude Code caches its instructions between
+   tasks, so a single run's cost depends on what ran just before it.
 4. The script prints a table and the saving, and saves everything in
    `benchmarks\claude-pair-results\<time>\`: `summary.json`, each answer as
    `runN-<arm>.answer.md`, every tool call in `runN-<arm>.tools.txt`, and the

@@ -6,8 +6,10 @@ Usage (from any folder, with Claude Code and BaleContext installed):
 Each run calls `claude -p` once per arm in the same checkout, rotating which arm
 goes first. All arms get the same model, the same read-only tools and no other
 MCP servers. Arms: "without" (plain Claude Code), "with" (BaleContext server and
-its instructions) and "hook" (the same plus the prompt hook, which hands the
-model BaleContext's evidence before its first turn). Default: without,hook.
+its instructions) and "hook" (only the prompt hook, which hands the model
+BaleContext's evidence before its first turn; system prompt and tools stay the
+same as "without", so cached-prompt pricing is comparable). Default: without,hook.
+Prompt caching makes a single run noisy: use --runs 3 or more.
 Token counts come from Claude Code's own JSON result for the whole task, every
 model call included. Answers are saved side by side so a person can judge
 quality; this script never decides that an answer is correct.
@@ -58,10 +60,12 @@ def command(arm: str, args, mcp_config: Path, hook_config: Path | None = None) -
     line = [claude, "-p", "--output-format", "stream-json", "--verbose", "--model", args.model, "--max-turns", str(args.max_turns),
             "--strict-mcp-config", "--disallowedTools", *WRITE_TOOLS]
     allowed = list(READ_TOOLS)
-    if arm in ("with", "hook"):
+    if arm == "with":
         line += ["--mcp-config", str(mcp_config), "--append-system-prompt", instructions()]
         allowed.append("mcp__balecontext")
     if arm == "hook":
+        # Hook only: the system prompt and tools stay identical to "without", so both arms
+        # share Claude Code's cached prefix and only the evidence itself is new input.
         line += ["--settings", str(hook_config)]
     return line + ["--allowedTools", *allowed]
 
