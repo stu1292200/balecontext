@@ -33,11 +33,15 @@
   calls on objects whose type is unknown when at most three project methods carry the
   name (`field._clean_bound_field(bf)`, labelled "receiver type not known" and stored
   as CANDIDATE edges that the main walk, graph and paths ignore), and direct subclass
-  overrides (`BaseModelForm._post_clean`). They are shown only with budget left and
-  otherwise named, with path and lines, in a PARTIAL verdict. The entry's own chain is
-  shown at full length first. Index schema 5.
-- The prompt hook sends a compact pack (short source headings, no id map) and starts
-  from a larger budget, so more source fits under the hook limit.
+  overrides (`BaseModelForm._post_clean`). Those within three calls of the entry or
+  named like the question are shown at full length when budget is left, and otherwise
+  named, with path and lines, in a PARTIAL verdict; the rest are listed as NOT FOLLOWED
+  without blocking a COMPLETE verdict. A candidate whose class is named like the
+  receiver (`self.query.chain()` → `Query.chain`) wins over the others. The entry's own
+  chain is shown at full length first. Index schema 6.
+- The prompt hook sends a compact pack (short source headings, shared indentation
+  dropped, no query echo or id map) and starts from a larger budget, so more source fits
+  under the hook limit.
   `benchmarks/relevance.py --hook` measures what the hook would send.
 - `benchmarks/claude_pair.py` and [docs/claude-code-test.md](docs/claude-code-test.md):
   a paired Claude Code test with and without BaleContext, recording every tool call.

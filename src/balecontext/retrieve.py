@@ -350,6 +350,7 @@ def context(project: Project, query: str, budget: int = 3000, session: dict | No
         # Planned order: each seed followed by what it calls, in the order it calls them.
         planned: list[tuple[dict, str]] = []
         planned_ids: set[str] = set()
+        depth_of: dict[str, int] = {}
 
         def plan(item: dict, role: str) -> None:
             if item["id"] not in planned_ids:
@@ -378,6 +379,7 @@ def context(project: Project, query: str, budget: int = 3000, session: dict | No
                     callees.sort(key=priority)
                     for callee in callees:
                         if callee["id"] not in planned_ids:
+                            depth_of[callee["id"]] = depth_of.get(parent["id"], 0) + 1
                             plan(callee, f"called by {parent['name']} at line {callee['line']}" if callee.get("line") else f"used by {parent['name']}")
                             following.append(callee)
                 level = following
@@ -389,23 +391,32 @@ def context(project: Project, query: str, budget: int = 3000, session: dict | No
                 # The entry's chain may continue in another module (res.render -> app.render).
                 walk(item, 4 if position == 0 else 1, cross=position == 0)
         # Then the chain where it leaves this file: calls into other modules, calls on objects of
-        # unknown type, and subclass overrides of the methods shown. Shown only if budget is left,
-        # and named in the verdict otherwise, so a pack never calls itself complete without them.
+        # unknown type, and subclass overrides of the methods shown. Those near the entry or named
+        # like the question are followed (shown if budget is left, else named in a PARTIAL verdict);
+        # the rest are only listed as not followed, so the pack never hides that they exist.
         elsewhere: list[tuple[dict, str]] = []
+        aside: list[tuple[dict, str]] = []
         main_chain = [item for item, _ in planned if item["kind"] != "class"]
         # The entry's own chain is shown at full length before anything followed outside it.
         main_ids = {item["id"] for item in main_chain[:12]}
-        reach = [pair for item in main_chain for pair in _outward(db, item) + _overrides(db, item)]
+        # Calls made at most three steps from the entry are on its path; deeper ones count only
+        # when named like the question.
+        near = {item["id"] for item in main_chain if depth_of.get(item["id"], 0) <= 3}
+        reach = [(source, pair) for source in main_chain for pair in _outward(db, source) + _overrides(db, source)]
         followed = 0
-        for item, role in reach:
-            if item["id"] in planned_ids:
+        for source, (item, role) in reach:
+            if item["id"] in planned_ids or item["id"] in {e["id"] for e, _ in elsewhere + aside}:
                 continue
-            if followed < OUTWARD_LIMIT:
+            leaf_tokens = {rank.stem(t) for t in rank.split_identifier(item["name"].rsplit(".", 1)[-1])}
+            if source["id"] not in near and not leaf_tokens & query_words:
+                aside.append((item, role))
+            elif followed < OUTWARD_LIMIT:
                 followed += 1
                 plan(item, role)
+                main_ids.add(item["id"])
                 if not role.startswith("overrides"):
                     walk(item, 2)
-            elif item["id"] not in {e["id"] for e, _ in elsewhere}:
+            else:
                 elsewhere.append((item, role))
         related_items: list[tuple[dict, str]] = []
         if seeds:
@@ -521,10 +532,12 @@ def context(project: Project, query: str, budget: int = 3000, session: dict | No
             coverage = "COVERAGE: PARTIAL (" + "; ".join(gaps) + "). Fetch listed ids with balecontext_expand, or read the specific lines."
         else:
             verdict = "COMPLETE"
-            coverage = "COVERAGE: COMPLETE. The entry point, every definition it calls (other files included) and direct subclass overrides are shown in full above. Answer from this evidence; read further only for behaviour outside these definitions."
+            coverage = "COVERAGE: COMPLETE. The entry point, every definition it calls in its own file, and the related calls and direct subclass overrides elsewhere are shown in full above. Answer from this evidence; read further only for behaviour outside these definitions."
         tail: list[str] = []
         if listed:
             tail.append("MAP (shown above, related, or available by id):\n" + "\n".join(listed[:20]))
+        if aside:
+            tail.append("NOT FOLLOWED (calls outside the question's words, for reference): " + ", ".join(f"{item['name']} {item['path']}:{item['start']}-{item['end']}" for item, _ in aside[:4]))
         tail.append(coverage)
         while tail and estimate("\n\n".join(sections + tail)) > limit and listed:
             listed = listed[:-1]

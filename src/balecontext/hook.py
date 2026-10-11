@@ -65,10 +65,23 @@ def compact(text: str) -> str:
         return f"=== {meta['path']}:{start}-{end} {meta['name']} ({meta['role']})"
 
     text = re.sub(r"^SOURCE (\{.*\})$", heading, text, flags=re.M)
-    text = re.sub(r"\n\nMAP \(shown above, related, or available by id\):\n.*?(?=\n\nCOVERAGE: )", "", text, flags=re.S)
+    # The query echo and the notice repeat what HEADER already says.
+    text = re.sub(r"\ABALECONTEXT EVIDENCE PACK\..*?\n\n.*?\n\n", "", text, count=1, flags=re.S)
+    text = re.sub(r"(?m)^(=== .*\n)((?:\d+: .*(?:\n|$))+)", _dedent, text)
+    text = re.sub(r"\n\nMAP \(shown above, related, or available by id\):\n.*?(?=\n\n(?:NOT FOLLOWED|COVERAGE)\b)", "", text, flags=re.S)
     text = re.sub(r"; fetch the rest with balecontext_expand ids=\[[^\]]*\]\.\]", "; read the rest from the file.]", text)
     text = text.replace("SOURCE ALREADY SENT IN THIS SESSION:", "ALREADY SENT:")
     return text.replace("Fetch listed ids with balecontext_expand, or read the specific lines.", "Read the specific lines listed.")
+
+
+def _dedent(match: re.Match) -> str:
+    """Drop the indentation every numbered line in a block shares; line numbers stay exact."""
+    lines = match.group(2).splitlines(keepends=True)
+    parts = [re.match(r"(\d+): (.*)", line.rstrip("\n")) for line in lines]
+    code = [p.group(2) for p in parts if p and p.group(2).strip()]
+    cut = min((len(c) - len(c.lstrip(" ")) for c in code), default=0)
+    body = "".join(f"{p.group(1)}: {p.group(2)[cut:]}" + ("\n" if line.endswith("\n") else "") for p, line in zip(parts, lines))
+    return match.group(1) + body
 
 
 def _names_code(parsed: rank.Query, response: dict) -> bool:

@@ -306,6 +306,16 @@ class ResolveTest(unittest.TestCase):
         self.assertIn(("Runner.go", "unresolved:self.step.advance", "UNRESOLVED"), labelled)
         self.assertIn(("drive", "Runner.go", "CANDIDATE"), labelled)
 
+    def test_unknown_receiver_prefers_the_class_named_like_it(self):
+        source = ("class RawQuery:\n    def chain(self):\n        return 1\n\n"
+                  "class Query:\n    def chain(self):\n        return 2\n\n"
+                  "class QuerySet:\n    def _chain(self):\n        return self.query.chain()\n")
+        result = extract("query.py", source)
+        nodes = [node.dict() for node in result.nodes]
+        by_id = {node["id"]: node for node in nodes}
+        targets = {by_id[e["target"]]["name"] for e in resolve(nodes, result.refs) if e["evidence"] == "CANDIDATE"}
+        self.assertEqual(targets, {"Query.chain"})
+
     def test_entry_is_the_outermost_matching_function(self):
         temporary = tempfile.TemporaryDirectory(prefix="balecontext-root-")
         self.addCleanup(temporary.cleanup)
@@ -374,6 +384,11 @@ class HookTest(unittest.TestCase):
         self.assertEqual(output["hookEventName"], "UserPromptSubmit")
         self.assertIn("def is_valid", output["additionalContext"])
         self.assertIn("COVERAGE: COMPLETE", output["additionalContext"])
+        # Compact: short headings, shared indentation dropped, no id map.
+        self.assertIn("=== django/forms/forms.py:", output["additionalContext"])
+        self.assertRegex(output["additionalContext"], r"\n\d+: def is_valid")
+        self.assertNotIn("MAP (", output["additionalContext"])
+        self.assertNotIn('SOURCE {"id"', output["additionalContext"])
         self.assertLessEqual(len(output["additionalContext"]), 9500)
         for chat in ("thanks, looks good", "/clear", "please run the build again"):
             self.assertEqual(self.run_hook(chat, self.root), "")

@@ -264,6 +264,8 @@ COMMON_METHODS = {
     "upper", "encode", "decode", "read", "write", "close", "open", "push", "shift", "slice", "splice", "map", "filter",
     "forEach", "reduce", "find", "some", "every", "includes", "indexOf", "has", "delete", "then", "catch", "toString",
     "call", "apply", "bind", "emit", "on", "send", "next", "log", "debug", "info", "warning", "error", "exception",
+    "intersection", "union", "difference", "symmetric_difference", "issubset", "issuperset", "count", "index", "sort",
+    "reverse",
 }
 
 
@@ -378,6 +380,11 @@ def resolve(nodes: list[dict], refs: list[dict]) -> list[dict]:
                     destination = None
         leaf = name.rsplit(".", 1)[-1]
         candidates = [c for c in methods_by_leaf.get(leaf, []) if c != ref["source"]] if "." in name and leaf in project_leaves else []
+        if len(candidates) > 1:
+            # `self.query.chain()` means Query.chain, not RawQuery.chain: prefer the class named like the receiver.
+            receiver = name.rsplit(".", 2)[-2].lstrip("#_").lower()
+            named = [c for c in candidates if by_id[c]["name"].rsplit(".", 1)[0].rsplit(".", 1)[-1].lower() == receiver]
+            candidates = named or candidates
         if destination:
             edges.append(edge(ref["source"], destination, ref["relation"], "INFERRED", ref.get("line")))
         elif ref["relation"] == "calls" and 1 <= len(candidates) <= 3:
