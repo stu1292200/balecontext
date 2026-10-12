@@ -106,6 +106,14 @@ py benchmarks\claude_pair.py C:\path\to\requests-test --question-file benchmarks
 py benchmarks\claude_pair.py C:\path\to\django-test --question-file benchmarks\questions\django-form-is-valid.txt --followup-file benchmarks\questions\django-chat-followups.txt --runs 3
 ```
 
+Harder questions, each spanning several modules (a request through the middleware chain and
+URL resolution, a management command from the command line to `handle()`, and the `extends`
+and `block` template tags), are in one Django conversation:
+
+```
+py benchmarks\claude_pair.py C:\path\to\django-test --question-file benchmarks\questions\django-request-handling.txt --followup-file benchmarks\questions\django-hard-followups.txt --runs 3
+```
+
 The results folder contains your local paths, so it is ignored by git. At the end of
 each test, `claude_pair.py` writes `share.md` in that folder and prints its path: the
 questions, the summary, each question's tokens and cost, every model call's usage for

@@ -1,0 +1,1 @@
+Trace how Django handles an HTTP request from WSGIHandler.__call__ through the middleware chain and URL resolution to the view, and back to the response. Cite the relevant source files and line numbers. Do not modify any files.
