@@ -251,13 +251,14 @@ def _dedent(match: re.Match) -> str:
 
 
 def _names_code(parsed: rank.Query, response: dict) -> bool:
-    """The prompt names the lead definition: an identifier matched it, or two words of its name did."""
+    """The prompt names the lead definition: an identifier matched it, or two words of its name did
+    (one word when the prompt is plainly about code because it names an identifier)."""
     if not response.get("strong") or not response["sources"]:
         return False
     if parsed.identifiers and response.get("entry_identifier"):
         return True
     lead = {rank.stem(t) for t in rank.split_identifier(response["sources"][0]["name"])}
-    return len(lead & set(parsed.words)) >= 2
+    return len(lead & set(parsed.words)) >= (1 if parsed.identifiers else 2)
 
 
 def _project_root(start: Path) -> Path | None:

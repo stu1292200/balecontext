@@ -19,6 +19,9 @@ STOP = {
     "also", "called", "get", "gets", "used", "using", "via", "way", "ways", "need", "needs", "decide", "decides",
 }
 TEST_WORDS = {"test", "tests", "testing", "spec", "specs"}
+# "the next request", "the same session": after a determiner these only describe the noun.
+GENERIC_ADJECTIVES = {"next", "previous", "first", "last", "new", "old", "same", "other", "current", "following", "original", "final"}
+DETERMINERS = {"the", "a", "an", "this", "that", "each", "every", "its", "their", "our", "your", "my"}
 DOC_WORDS = {"doc", "docs", "documentation", "guide", "readme"}
 CODE_EXTENSIONS = (".py", ".pyi", ".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx")
 DOC_EXTENSIONS = (".md", ".rst", ".txt", ".adoc", ".mdx")
@@ -108,8 +111,10 @@ def parse(query: str) -> Query:
     result.wants_tests = bool(lowered & TEST_WORDS)
     result.wants_docs = bool(lowered & DOC_WORDS)
     result.wants_types = bool(lowered & {"type", "types", "interface", "interfaces", "typing"})
-    for match in TOKEN.finditer(query):
-        token = match.group(0)
+    tokens = [match.group(0) for match in TOKEN.finditer(query)]
+    for position, token in enumerate(tokens):
+        previous = tokens[position - 1].lower() if position else ""
+        following = tokens[position + 1].lower() if position + 1 < len(tokens) else ""
         called = token.endswith("()")
         token = token.removesuffix("()").strip(".")
         if not token:
@@ -126,7 +131,12 @@ def parse(query: str) -> Query:
             words = split_identifier(token)
         else:
             words = split_identifier(token)
-            if len(words) == 1 and len(words[0]) > 2 and words[0] not in STOP:
+            if previous in DETERMINERS and token.lower() in GENERIC_ADJECTIVES:
+                continue
+            # "the next request", "the Session": after a determiner a plain word is a noun or an
+            # adjective, not a function's name, unless the question says so ("the compose function").
+            named = previous not in DETERMINERS or following in {"function", "method", "helper"}
+            if len(words) == 1 and len(words[0]) > 2 and words[0] not in STOP and named:
                 result.prose_words.add(stem(words[0]))
         for word in words:
             if len(word) <= 2 or word in STOP:
@@ -289,6 +299,10 @@ def score(table: SymbolTable, query: Query, body_scores: dict[str, float] | None
 
 def pick_seeds(query: Query, ranked: list[tuple[float, Entry, set[str]]], limit: int = 3) -> list[tuple[float, Entry, set[str]]]:
     """Best match per identifier, then a few strong extras; same-named symbols share a slot."""
+    # Tests and docs are evidence only when the question asks for them, even when one is named
+    # exactly like an identifier in the question (a test called `no_proxy`).
+    asked = {"code", "example", "other"} | ({"test"} if query.wants_tests else set()) | ({"doc"} if query.wants_docs else set())
+    ranked = [item for item in ranked if item[1].category in asked] or ranked
     seeds: list[tuple[float, Entry, set[str]]] = []
     used_ids: set[str] = set()
     for identifier in query.identifiers:

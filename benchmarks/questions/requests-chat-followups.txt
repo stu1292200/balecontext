@@ -1,0 +1,5 @@
+How does Session.send() handle redirects, and when is the response body read? Cite the relevant source files and line numbers. Do not modify any files.
+---
+How are cookies from a response saved on the Session and attached to the next request? Cite the relevant source files and line numbers. Do not modify any files.
+---
+How does requests choose the proxy for a request, including environment variables and no_proxy? Cite the relevant source files and line numbers. Do not modify any files.

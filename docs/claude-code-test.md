@@ -93,5 +93,15 @@ py benchmarks\claude_pair.py C:\path\to\requests-test --question-file benchmarks
 
 Each answer to the second question is saved as `runN-<arm>.followup.answer.md`.
 
+For a longer conversation, put several follow-up questions in one file, separated by a
+line of three dashes (`---`). The answers are then saved as `runN-<arm>.followup1.answer.md`,
+`followup2`, and so on, and a table shows each question's own tokens and cost, so you can
+see how the difference grows as the conversation goes on:
+
+```
+py benchmarks\claude_pair.py C:\path\to\requests-test --question-file benchmarks\questions\requests-session-request.txt --followup-file benchmarks\questions\requests-chat-followups.txt --runs 3
+py benchmarks\claude_pair.py C:\path\to\django-test --question-file benchmarks\questions\django-form-is-valid.txt --followup-file benchmarks\questions\django-chat-followups.txt --runs 3
+```
+
 The results folder contains your local paths, so it is ignored by git; share
 `summary.json` and the answers by hand.

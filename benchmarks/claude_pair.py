@@ -115,7 +115,7 @@ def invoke(arm: str, args, prompt: str, mcp_config: Path, out: Path, name: str, 
     return data, calls, own
 
 
-def run_arm(arm: str, args, question: str, mcp_config: Path, out: Path, number: int, followup: str | None = None) -> dict:
+def run_arm(arm: str, args, question: str, mcp_config: Path, out: Path, number: int, followups: list[str] | None = None) -> dict:
     started = time.monotonic()
     hook_log = args.checkout / ".balecontext" / "hook-log.jsonl"
     hook_lines = len(hook_log.read_text(encoding="utf-8").splitlines()) if hook_log.exists() else 0
@@ -124,24 +124,32 @@ def run_arm(arm: str, args, question: str, mcp_config: Path, out: Path, number: 
     cost, turns = data.get("total_cost_usd"), data.get("num_turns")
     first = {"tokens": sum(usage.values()), "cost": cost}
     first_usage, first_turns = dict(usage), turns
-    if followup:
-        # A second question in the same conversation (`--resume`), as people use Claude Code.
-        later, later_calls, own = invoke(arm, args, followup, mcp_config, out, f"run{number}-{arm}.followup", resume=data.get("session_id"))
-        calls += ["--- follow-up question ---"] + later_calls
+    errors = [data]
+    session, reports = data.get("session_id"), []
+    for position, followup in enumerate(followups or [], 1):
+        # Later questions in the same conversation (`--resume`), as people use Claude Code.
+        name = f"run{number}-{arm}.followup" + (str(position) if len(followups) > 1 else "")
+        later, later_calls, own = invoke(arm, args, followup, mcp_config, out, name, resume=session)
+        session = later.get("session_id") or session
+        errors.append(later)
+        calls += [f"--- follow-up question {position} ---"] + later_calls
         reported = {field: int((later.get("usage") or {}).get(field) or 0) for field in USAGE_FIELDS}
         # A resumed run has reported its own calls' usage but the whole conversation's cost
         # (Claude Code restores its cost tracker, and `modelUsage` with it). Check each against
         # the follow-up's own model calls rather than assume; with nothing to check, usage is
         # taken as the run's own and cost as cumulative, as documented.
-        first_total, own_total = sum(usage.values()), sum(own.values())
-        cumulative = bool(own_total) and abs(sum(reported.values()) - first_total - own_total) < abs(sum(reported.values()) - own_total)
+        before_total, own_total = sum(usage.values()), sum(own.values())
+        cumulative = bool(own_total) and abs(sum(reported.values()) - before_total - own_total) < abs(sum(reported.values()) - own_total)
         tracked = sum(int(model.get(field) or 0) for model in (later.get("modelUsage") or {}).values() if isinstance(model, dict) for field in MODEL_USAGE_FIELDS)
-        cost_cumulative = abs(tracked - first_total - own_total) < abs(tracked - own_total) if tracked and own_total else True
+        cost_cumulative = abs(tracked - before_total - own_total) < abs(tracked - own_total) if tracked and own_total else True
         usage = reported if cumulative else {field: usage[field] + reported[field] for field in USAGE_FIELDS}
         later_cost = later.get("total_cost_usd")
         if isinstance(cost, (int, float)) and isinstance(later_cost, (int, float)):
             cost = later_cost if cost_cumulative else cost + later_cost
         turns = later.get("num_turns") if cumulative else (turns or 0) + (later.get("num_turns") or 0)
+        reports.append({"usage": reported, "cost_usd_estimate": later_cost, "turns": later.get("num_turns"), "own_calls": own,
+                        "model_usage_tokens": tracked, "cumulative": cumulative, "cost_cumulative": cost_cumulative,
+                        "conversation_tokens": sum(usage.values()), "conversation_cost_usd_estimate": cost})
     seconds = round(time.monotonic() - started, 1)
     hook_ran = None
     if arm == "hook":
@@ -161,15 +169,19 @@ def run_arm(arm: str, args, question: str, mcp_config: Path, out: Path, number: 
         "seconds": seconds,
         "hook_ran": hook_ran,
         "tool_calls": sum(not c.startswith(("  ->", "---")) for c in calls),
-        "error": data.get("is_error", False) or data.get("subtype") not in (None, "success"),
+        "error": any(result.get("is_error", False) or result.get("subtype") not in (None, "success") for result in errors),
     })
-    if followup:
+    if followups:
         # Raw figures, so the totals can be recomputed if Claude Code reports resumed runs differently.
         row["first_question"] = first | {"usage": first_usage, "turns": first_turns}
-        row["followup_reported"] = {"usage": reported, "cost_usd_estimate": later_cost, "turns": later.get("num_turns"), "own_calls": own,
-                                    "model_usage_tokens": tracked, "cumulative": cumulative, "cost_cumulative": cost_cumulative}
+        row["followups_reported"] = reports
         row["followup_tokens"] = row["total_tokens"] - first["tokens"]
         row["followup_cost_usd_estimate"] = cost - first["cost"] if isinstance(cost, (int, float)) and isinstance(first["cost"], (int, float)) else None
+        # Each question's own share, to see how the difference grows over a conversation.
+        totals = [(first["tokens"], first["cost"])] + [(r["conversation_tokens"], r["conversation_cost_usd_estimate"]) for r in reports]
+        row["tokens_by_question"] = [now[0] - before[0] for before, now in zip([(0, 0.0)] + totals, totals)]
+        row["cost_by_question"] = [round(now[1] - before[1], 6) if all(isinstance(v, (int, float)) for v in (now[1], before[1])) else None
+                                   for before, now in zip([(0, 0.0)] + totals, totals)]
     return row
 
 
@@ -183,7 +195,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--timeout", type=int, default=1200, help="Seconds per run")
     parser.add_argument("--arms", default="without,hook", help="Comma-separated arms: without, with, hook (default without,hook)")
     parser.add_argument("--same-prompt", action="store_true", help="Send the identical prompt every time (lets later runs reuse earlier runs' cache)")
-    parser.add_argument("--followup-file", type=Path, help="A second question asked in the same conversation; totals then cover both questions")
+    parser.add_argument("--followup-file", type=Path, action="append",
+                        help="Later questions asked in the same conversation, one per file or several separated by a line of ---; totals then cover every question")
     parser.add_argument("--out", type=Path, help="Results folder (default: claude-pair-results/<time> next to this script)")
     args = parser.parse_args(argv)
     args.checkout = args.checkout.resolve()
@@ -193,9 +206,10 @@ def main(argv: list[str] | None = None) -> int:
     question = args.question_file.read_text(encoding="utf-8").strip()
     if not question:
         raise SystemExit("The question file is empty.")
-    followup = args.followup_file.read_text(encoding="utf-8").strip() if args.followup_file else None
-    if args.followup_file and not followup:
-        raise SystemExit("The follow-up question file is empty.")
+    # Each follow-up file holds one question, or several separated by a line of three dashes.
+    followups = [part.strip() for path in args.followup_file or [] for part in re.split(r"(?m)^---\s*$", path.read_text(encoding="utf-8"))]
+    if args.followup_file and (not followups or not all(followups)):
+        raise SystemExit("A follow-up question is empty.")
     refuse_contaminated(args.checkout)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     out = (args.out or Path(__file__).resolve().parent / "claude-pair-results" / stamp).resolve()
@@ -206,7 +220,7 @@ def main(argv: list[str] | None = None) -> int:
     mcp_config.write_text(json.dumps({"mcpServers": {"balecontext": {
         "command": sys.executable, "args": ["-m", "balecontext", "mcp", "--root", str(args.checkout)]}}}, indent=2), encoding="utf-8")
     (out / "balecontext-hook-settings.json").write_text(json.dumps(hook_config(), indent=2), encoding="utf-8")
-    (out / "question.txt").write_text(question + "\n" + (f"\nFollow-up:\n{followup}\n" if followup else ""), encoding="utf-8")
+    (out / "question.txt").write_text(question + "\n" + "".join(f"\nFollow-up {n}:\n{text}\n" for n, text in enumerate(followups, 1)), encoding="utf-8")
     rows = []
     for number in range(1, args.runs + 1):
         shift = (number - 1) % len(arms)
@@ -214,11 +228,11 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Run {number}: {arm}...")
             # A number BaleContext's query parser ignores; it only stops cross-task cache reuse.
             prompt = question if args.same_prompt else f"{question}\n\n#{random.randrange(10**5, 10**6)}"
-            later = followup if args.same_prompt or not followup else f"{followup}\n\n#{random.randrange(10**5, 10**6)}"
+            later = [text if args.same_prompt else f"{text}\n\n#{random.randrange(10**5, 10**6)}" for text in followups]
             rows.append(run_arm(arm, args, prompt, mcp_config, out, number, later))
             row = rows[-1]
             print(f"  {row['total_tokens']:,} tokens, {row['turns']} turns, {row['seconds']}s"
-                  + (f" (follow-up alone: {row['followup_tokens']:,} tokens)" if followup else ""))
+                  + (f" (follow-ups alone: {row['followup_tokens']:,} tokens)" if followups else ""))
     summary = {}
     for arm in arms:
         mine = [row for row in rows if row["arm"] == arm]
@@ -229,7 +243,7 @@ def main(argv: list[str] | None = None) -> int:
             "median_turns": statistics.median(row["turns"] for row in mine) if all(isinstance(row["turns"], int) for row in mine) else None,
             "errors": sum(bool(row["error"]) for row in mine),
         }
-        if followup:
+        if followups:
             later = [row["followup_cost_usd_estimate"] for row in mine if isinstance(row.get("followup_cost_usd_estimate"), (int, float))]
             summary[arm]["median_followup_tokens"] = statistics.median(row["followup_tokens"] for row in mine)
             summary[arm]["median_followup_cost_usd_estimate"] = statistics.median(later) if later else None
@@ -241,11 +255,23 @@ def main(argv: list[str] | None = None) -> int:
         assisted["token_saving_percent"] = round(100 * (1 - assisted["median_total_tokens"] / base["median_total_tokens"]), 1) if base["median_total_tokens"] else None
         if base["median_cost_usd_estimate"] and assisted["median_cost_usd_estimate"] is not None:
             assisted["cost_saving_percent"] = round(100 * (1 - assisted["median_cost_usd_estimate"] / base["median_cost_usd_estimate"]), 1)
-        if followup and base.get("median_followup_tokens"):
+        if followups and base.get("median_followup_tokens"):
             assisted["followup_token_saving_percent"] = round(100 * (1 - assisted["median_followup_tokens"] / base["median_followup_tokens"]), 1)
             if base.get("median_followup_cost_usd_estimate") and assisted.get("median_followup_cost_usd_estimate") is not None:
                 assisted["followup_cost_saving_percent"] = round(100 * (1 - assisted["median_followup_cost_usd_estimate"] / base["median_followup_cost_usd_estimate"]), 1)
-    summary["note"] = ("Whole-task totals from Claude Code's JSON result" + (", both questions together; 'followup' figures are the second question alone" if followup else "") + ". Cost is Claude Code's own estimate, the closest "
+    if followups:
+        print(f"\n{'question':>8}" + "".join(f" {arm + ' tokens':>15} {arm + ' $':>10}" for arm in arms))
+        for index in range(1 + len(followups)):
+            line = f"{index + 1:>8}"
+            for arm in arms:
+                mine = [row for row in rows if row["arm"] == arm]
+                tokens = statistics.median(row["tokens_by_question"][index] for row in mine)
+                costs = [row["cost_by_question"][index] for row in mine if row["cost_by_question"][index] is not None]
+                summary[arm].setdefault("median_tokens_by_question", []).append(tokens)
+                summary[arm].setdefault("median_cost_by_question", []).append(statistics.median(costs) if costs else None)
+                line += f" {tokens:>15,.0f} {statistics.median(costs) if costs else float('nan'):>10.3f}"
+            print(line)
+    summary["note"] = ("Whole-task totals from Claude Code's JSON result" + (f", all {1 + len(followups)} questions of one conversation together; 'followup' figures are the later questions alone" if followups else "") + ". Cost is Claude Code's own estimate, the closest "
                        "proxy for plan limits. Judge answer quality by reading the saved answers; savings mean nothing "
                        "if the BaleContext answers are worse.")
     (out / "summary.json").write_text(json.dumps({"summary": summary, "rows": rows}, indent=2), encoding="utf-8")

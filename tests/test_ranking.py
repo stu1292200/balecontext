@@ -154,6 +154,23 @@ class RankingTest(unittest.TestCase):
         asked = context(self.project, "tests for field validation error handling cleaning")
         self.assertTrue(any(s["path"].startswith("tests/") for s in asked["sources"]))
 
+    def test_a_test_named_like_the_question_is_not_the_entry(self):
+        (self.root / "netlib").mkdir()
+        (self.root / "netlib/utils.py").write_text(
+            "def get_environ_proxies(url, no_proxy=None):\n    if should_bypass_proxies(url, no_proxy=no_proxy):\n        return {}\n    return getproxies()\n\n\n"
+            "def should_bypass_proxies(url, no_proxy):\n    return False\n", encoding="utf-8")
+        (self.root / "tests/test_utils.py").write_text("class TestGetEnvironProxies:\n    def no_proxy(self):\n        return 'example.com'\n", encoding="utf-8")
+        response = context(self.project, "How does it pick environment proxies, including no_proxy?")
+        self.assertEqual(response["sources"][0]["name"], "get_environ_proxies")
+        asked = context(self.project, "Which tests cover no_proxy?")
+        self.assertEqual(asked["sources"][0]["path"], "tests/test_utils.py")
+
+    def test_a_plain_word_after_a_determiner_is_not_a_function_name(self):
+        self.assertEqual(rank.parse("How are cookies attached to the next request?").words, ["cooky", "attach", "request"])
+        self.assertIn("next", rank.parse("How does next run the middleware?").prose_words)
+        self.assertNotIn("session", rank.parse("How are cookies saved on the Session?").prose_words)
+        self.assertIn("compose", rank.parse("How does the compose function run middleware?").prose_words)
+
     def test_first_response_is_capped_and_expand_returns_full_source(self):
         response = context(self.project, PROSE, 8000)
         self.assertLessEqual(response["estimated_tokens"], 4000)

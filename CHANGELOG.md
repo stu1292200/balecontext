@@ -70,6 +70,16 @@
   with totals for both questions and for the second one alone. A resumed run reports its
   own calls' usage but the whole conversation's cost; each is checked against the run's
   own model calls, so the first question's cost is no longer counted twice.
+- `--followup-file` takes several questions (one file each, or one file with questions
+  separated by `---`) for a longer conversation, and reports each question's own tokens
+  and cost. Four-question conversations for requests and Django are in `benchmarks/questions/`.
+- A test or doc is never the entry point unless the question asks for tests or docs, even
+  when it is named exactly like an identifier in the question (a test called `no_proxy`).
+- After "the", "a" and similar words, a plain word is not taken as a function's name
+  ("the Session", "the next request"), and generic words such as "next" and "same" are
+  dropped there. A question that names an identifier gets the hook when the lead
+  definition matches one of its words (`compose` in "How does compose run middleware and
+  what happens if next() is called twice?").
 - Calling a class follows its constructor (`Request(...)` → `Request.__init__`); a class
   without one is left out instead of showing its header. Parameter lists of eight or more
   lines collapse to one line naming the parameters.
