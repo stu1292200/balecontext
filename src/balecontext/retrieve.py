@@ -683,6 +683,9 @@ def context(project: Project, query: str, budget: int = 3000, session: dict | No
         header = f"BALECONTEXT EVIDENCE PACK. Query read as {parsed.describe()}."
         session_sent = _session_sent(db, session)
         followup = bool(focus and planned and any(a <= planned[0][0]["start"] and planned[0][0]["end"] <= b for a, b in session_sent.get(planned[0][0]["path"], [])))
+        # Definitions a follow-up asks about are shown whole, up to FULL_BODY lines, so the answer
+        # needs no read of their remaining lines (`resolve_redirects` for "handle redirects").
+        whole_ids: set[str] = set()
         if followup:
             near_entry = {item["id"] for item in main_chain if depth_of.get(item["id"], 0) <= 1}
             # Words of the question beyond the entry's own name: subclass overrides of the entry
@@ -696,6 +699,7 @@ def context(project: Project, query: str, budget: int = 3000, session: dict | No
             keep = [pair for position, pair in enumerate(planned) if position == 0 or pair[0]["id"] in near_entry or asked_about(pair[0])]
             elsewhere = [pair for pair in planned if pair not in keep] + elsewhere
             planned = keep
+            whole_ids = {item["id"] for item, _ in keep[1:] if asked_about(item)}
         # An abstract method shows nothing of what runs, so the methods that run in its place follow
         # the code that reaches it, each after its class header when that header sets attributes the
         # shown code reads (`template_name_ul`). For a question about templates or rendering, the
@@ -773,7 +777,13 @@ def context(project: Project, query: str, budget: int = 3000, session: dict | No
                     sections.append(f"SOURCE ALREADY SENT IN THIS SESSION: {item['name']} {item['path']}:{item['start']}-{item['end']} id={item['id']}")
                     used.append({k: item[k] for k in ("id", "path", "name", "start", "end")})
                     continue
-                numbered, complete, note = _render_body(files, item, (FULL_BODY if wide else max(LONG_BODY, helper_lines)) if item["id"] in seed_ids or item["id"] in main_ids else helper_lines)
+                if (wide and (item["id"] in seed_ids or item["id"] in main_ids)) or item["id"] in whole_ids:
+                    max_lines = FULL_BODY
+                elif item["id"] in seed_ids or item["id"] in main_ids:
+                    max_lines = max(LONG_BODY, helper_lines)
+                else:
+                    max_lines = helper_lines
+                numbered, complete, note = _render_body(files, item, max_lines)
                 numbered = [(n, text) for n, text in numbered if not any(a <= n <= b for a, b in ranges)]
                 if not numbered:
                     continue

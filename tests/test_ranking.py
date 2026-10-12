@@ -520,6 +520,21 @@ class HookTest(unittest.TestCase):
         self.assertIn("order.audit += 4", text)
         self.assertNotIn("overflow_path", response)
 
+    def test_follow_up_shows_the_definition_it_asks_about_whole(self):
+        helpers = "".join(f"def stamp_{i}(req):\n" + "".join(f"    req.headers[{j}] = {j}  # stamp a header on the request\n" for j in range(24)) + "    return req\n\n" for i in range(4))
+        redirects = "def follow_redirects(resp, req):\n" + "".join(f"    resp.hops += {j}  # count one redirect hop\n" for j in range(90)) + "    return resp\n\n"
+        entry = "def send_request(req):\n" + "".join(f"    req = stamp_{i}(req)\n" for i in range(4)) + "    resp = follow_redirects(req, req)\n    return resp\n"
+        (self.root / "client.py").write_text(helpers + redirects + entry, encoding="utf-8")
+        project = Project(self.root)
+        project.index()
+        session = {}
+        context(project, "How does send_request work?", 400, session=session, focus=True)
+        response = context(project, "How does send_request handle redirects?", 2400, session=session, focus=True)
+        self.assertTrue(response["followup"])
+        # The redirect loop is what the follow-up asks about: all of it, not its first lines.
+        self.assertIn("resp.hops += 89", response["text"])
+        self.assertNotRegex(response["text"], r"cut short: [^;)]*follow_redirects")
+
     def test_entry_that_calls_nothing_shows_where_it_is_used(self):
         (self.root / "utils.py").write_text(
             "def select_route(url, routes):\n    for key in (url, 'all'):\n        if key in routes:\n            return routes[key]\n    return None\n", encoding="utf-8")

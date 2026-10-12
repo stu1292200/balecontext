@@ -104,7 +104,13 @@
   each once the previous answer is in, as people type them; `--resume-each` keeps the
   old way (a new `claude -p --resume` per question). Resuming after a one-step first
   answer made Claude Code re-write about 14,000 cached tokens on the next question in
-  every Django hook run, a cost an ongoing session may not have.
+  every Django hook run. A one-session run shows the same re-write, so it comes from
+  Claude Code's own requests, not from resuming or from the hook's text.
+- In a follow-up, a definition the question asks about beyond the entry is shown whole
+  instead of stopping at 60 lines. The requests redirects follow-up now
+  carries all of `resolve_redirects` (9,350 characters, no saved file), where before
+  Claude read its last 34 lines in an extra step; the 31 gold questions, relevance and
+  the Django conversation are unchanged.
 - `benchmarks/claude_pair.py` writes `share.md` itself at the end of a test.
 - `benchmarks/share_results.py` bundles one paired test (summary, per-question figures,
   per-call usage, tool calls and answers) into a single `share.md`.
