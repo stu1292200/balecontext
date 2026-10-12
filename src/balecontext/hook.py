@@ -60,14 +60,15 @@ def prompt_pack(project: Project, prompt: str, budget: int = HOOK_BUDGET, sessio
     while budget >= 800:
         attempt = copy.deepcopy(session) if session is not None else None
         try:
-            response = context(project, prompt, budget, session=attempt)
+            response = context(project, prompt, budget, session=attempt, focus=True)
         except ValueError:
             return None
         if response["verdict"] == "NONE" or not _names_code(parsed, response):
             return None
         body = compact(response["text"])
         text = (HEADER + (" " + ALREADY_SENT_NOTE if "ALREADY SENT:" in body else "")) + "\n\n" + body
-        if len(text) <= MAX_CHARS and response["verdict"] == "PARTIAL":
+        # A follow-up about code already sent gets only what is new; no saved file.
+        if len(text) <= MAX_CHARS and response["verdict"] == "PARTIAL" and not response.get("followup"):
             text, response = _overflow(project, prompt, text, response, copy.deepcopy(session) if session is not None else None)
         if len(text) <= MAX_CHARS:
             if session is not None:

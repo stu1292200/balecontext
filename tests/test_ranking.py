@@ -456,6 +456,29 @@ class HookTest(unittest.TestCase):
         self.assertNotIn("order.audit += 3", rest)
         self.assertEqual([s["name"] for s in response["overflow_sources"] if s["path"] == "billing.py"], ["PaymentGateway.settle_account"])
 
+    def test_follow_up_about_sent_code_gets_only_new_source_it_names(self):
+        steps = "".join(f"def step_{i}(order):\n" + "".join(f"    order.total += {j}  # adjust the order total\n" for j in range(40)) + "    return order\n\n" for i in range(8))
+        entry = "def checkout_order(order, gateway):\n" + "".join(f"    order = step_{i}(order)\n" for i in range(8)) + "    gateway.settle_account(order)\n    return order\n"
+        (self.root / "shop.py").write_text(steps + entry, encoding="utf-8")
+        (self.root / "billing.py").write_text(
+            "class PaymentGateway:\n"
+            '    def audit_ledger(self, order):\n        """Write the order to the audit ledger."""\n' + "".join(f"        order.audit += {j}\n" for j in range(5)) + "        return order\n\n"
+            "    def settle_account(self, order):\n        balance = order.total * 2\n" + "".join(f"        balance += {j}\n" for j in range(35))
+            + "        if balance > 100:\n            self.audit_ledger(order)\n        return balance\n", encoding="utf-8")
+        from balecontext import hook
+        project = Project(self.root)
+        project.index()
+        session = {}
+        hook.prompt_pack(project, "How does checkout_order work?", session=session)
+        text, response = hook.prompt_pack(project, "When checkout_order settles the account, how is the audit ledger written?", session=session)
+        self.assertTrue(response["followup"])
+        # The steps went out with the first question; only the calls this question names are new.
+        self.assertRegex(text, r"(?m)^ALREADY SENT: checkout_order shop.py:\d+-\d+; step_0 ")
+        self.assertNotIn("order.total += 39", text)
+        self.assertIn("balance += 34", text)
+        self.assertIn("order.audit += 4", text)
+        self.assertNotIn("overflow_path", response)
+
     def test_installer_adds_the_hook_once_and_keeps_other_settings(self):
         import json
         from balecontext.integrations import install

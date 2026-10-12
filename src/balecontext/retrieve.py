@@ -392,8 +392,12 @@ def _body_matches(db, query: str) -> list[dict]:
         return []
 
 
-def context(project: Project, query: str, budget: int = 3000, session: dict | None = None, cap: int = FIRST_RESPONSE_CAP) -> dict:
-    """Build an evidence pack: a map, the entry point and its callees in call order, and a coverage verdict."""
+def context(project: Project, query: str, budget: int = 3000, session: dict | None = None, cap: int = FIRST_RESPONSE_CAP, focus: bool = False) -> dict:
+    """Build an evidence pack: a map, the entry point and its callees in call order, and a coverage verdict.
+
+    With `focus`, a follow-up whose entry point was already sent in the session shows only new
+    definitions the question names or the entry calls directly; the rest are listed, not shown.
+    """
     validate_budget(budget, cap)
     terms(query)
     project.index()
@@ -517,6 +521,20 @@ def context(project: Project, query: str, budget: int = 3000, session: dict | No
         seed_ids = {entry.id for _, entry, _ in seeds}
         header = f"BALECONTEXT EVIDENCE PACK. Query read as {parsed.describe()}."
         session_sent = _session_sent(db, session)
+        followup = bool(focus and planned and any(a <= planned[0][0]["start"] and planned[0][0]["end"] <= b for a, b in session_sent.get(planned[0][0]["path"], [])))
+        if followup:
+            near_entry = {item["id"] for item in main_chain if depth_of.get(item["id"], 0) <= 1}
+            # Words of the question beyond the entry's own name: subclass overrides of the entry
+            # share its name, but a follow-up asks about something else around it.
+            entry_words = {rank.stem(t) for t in rank.split_identifier(planned[0][0]["name"].rsplit(".", 1)[-1])}
+            asked = query_words - entry_words
+
+            def asked_about(item: dict) -> bool:
+                return bool({rank.stem(t) for t in rank.split_identifier(item["name"].rsplit(".", 1)[-1])} & asked)
+
+            keep = [pair for position, pair in enumerate(planned) if position == 0 or pair[0]["id"] in near_entry or asked_about(pair[0])]
+            elsewhere = [pair for pair in planned if pair not in keep] + elsewhere
+            planned = keep
         map_lines = [_map_line(item, role) for item, role in planned + related_items]
         footer_reserve = min(120 + estimate("\n".join(map_lines[:20])), limit // 4)
         # Helpers are first shown up to HELPER_BODY lines; if that leaves budget unused,
@@ -618,7 +636,9 @@ def context(project: Project, query: str, budget: int = 3000, session: dict | No
                 gaps.append("calls not followed: " + ", ".join(unfollowed[:6]))
             if not seeds:
                 gaps.append("matched by text only")
-            coverage = "COVERAGE: PARTIAL (" + "; ".join(gaps) + "). Fetch listed ids with balecontext_expand, or read the specific lines."
+            coverage = "COVERAGE: PARTIAL (" + "; ".join(gaps) + "). " + (
+                "This follow-up shows only new source it names; read a listed definition only if the answer needs it." if followup
+                else "Fetch listed ids with balecontext_expand, or read the specific lines.")
         else:
             verdict = "COMPLETE"
             coverage = "COVERAGE: COMPLETE. The entry point, every definition it calls in its own file, and the related calls and direct subclass overrides elsewhere are shown in full above. Answer from this evidence; read further only for behaviour outside these definitions."
@@ -642,7 +662,7 @@ def context(project: Project, query: str, budget: int = 3000, session: dict | No
         # The hook's saved file shows the entry's own chain in full, outlines long calls followed
         # outside it, and lists helpers of those calls by name.
         omitted_items = [{k: item[k] for k in ("id", "path", "name", "start", "end")} | {"role": role} for item, role in not_included]
-        return {"text": text, "sources": used, "map": map_items, "chain": sorted(chain_ids), "helpers": sorted(helper_ids), "not_included": omitted_items, "edges": evidence_edges, "verdict": verdict, "strong": strong, "entry_identifier": bool(seeds and seeds[0][2]), "estimated_tokens": estimate(text), "budget": limit, "token_method": "ceil(UTF-8 bytes / 4); estimate only", "eligible_corpus_estimated_tokens": math.ceil(baseline / 4), "measurement_note": "Context size only. This is not total model-token savings or subscription usage."}
+        return {"text": text, "sources": used, "map": map_items, "chain": sorted(chain_ids), "helpers": sorted(helper_ids), "not_included": omitted_items, "followup": followup, "edges": evidence_edges, "verdict": verdict, "strong": strong, "entry_identifier": bool(seeds and seeds[0][2]), "estimated_tokens": estimate(text), "budget": limit, "token_method": "ceil(UTF-8 bytes / 4); estimate only", "eligible_corpus_estimated_tokens": math.ceil(baseline / 4), "measurement_note": "Context size only. This is not total model-token savings or subscription usage."}
 
 
 def expand(project: Project, ids: list[str], budget: int = 4000, session: dict | None = None) -> dict:

@@ -83,7 +83,9 @@ People usually ask several questions in one Claude Code conversation. With
 (`claude -p --resume`), and the totals cover both questions; `summary.json` also
 gives the second question alone (`median_followup_tokens`, `followup_*_saving_percent`).
 The hook remembers, per conversation, which source it already sent and names it
-instead of sending it again, until Claude Code compacts the conversation.
+instead of sending it again, until Claude Code compacts the conversation. When the
+second question starts from code already sent, the hook adds only the new definitions
+it names and writes no saved file.
 
 ```
 py benchmarks\claude_pair.py C:\path\to\requests-test --question-file benchmarks\questions\requests-session-request.txt --followup-file benchmarks\questions\requests-session-send-followup.txt --runs 3

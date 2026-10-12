@@ -58,11 +58,18 @@
   again). The installer also adds the hook for `PreCompact`, which clears that memory,
   because compaction summarises the evidence away. On a requests follow-up question the
   saved file drops from about 19,000 to 9,600 characters.
+- A follow-up whose entry point was already sent in the conversation gets only new source:
+  the entry's direct calls and the definitions the question names beyond the entry, with
+  no saved file. The requests follow-up drops from about 9,000 characters plus a 9,600
+  character file to 8,900 characters (`resolve_redirects` and `build_response` in full),
+  and the Django one to 1,300 characters, since everything it asks about was already sent.
 - Helpers the question does not name (the chain's own deep helpers and the helpers of calls
   followed elsewhere) come after every call it does name, so a question about redirects
   gets `resolve_redirects` before proxy-bypass internals.
 - `benchmarks/claude_pair.py --followup-file`: a second question in the same conversation,
-  with totals for both questions and for the second one alone.
+  with totals for both questions and for the second one alone. A resumed run reports its
+  own calls' usage but the whole conversation's cost; each is checked against the run's
+  own model calls, so the first question's cost is no longer counted twice.
 - Calling a class follows its constructor (`Request(...)` → `Request.__init__`); a class
   without one is left out instead of showing its header. Parameter lists of eight or more
   lines collapse to one line naming the parameters.

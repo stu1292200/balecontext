@@ -41,6 +41,7 @@ from balecontext.store import Project  # noqa: E402
 READ_TOOLS = ["Read", "Grep", "Glob", "LS"]
 WRITE_TOOLS = ["Edit", "MultiEdit", "Write", "NotebookEdit", "Bash"]
 USAGE_FIELDS = ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens")
+MODEL_USAGE_FIELDS = ("inputTokens", "cacheCreationInputTokens", "cacheReadInputTokens", "outputTokens")
 
 
 def instructions() -> str:
@@ -128,13 +129,18 @@ def run_arm(arm: str, args, question: str, mcp_config: Path, out: Path, number: 
         later, later_calls, own = invoke(arm, args, followup, mcp_config, out, f"run{number}-{arm}.followup", resume=data.get("session_id"))
         calls += ["--- follow-up question ---"] + later_calls
         reported = {field: int((later.get("usage") or {}).get(field) or 0) for field in USAGE_FIELDS}
-        # Claude Code documents a resumed run's totals as the whole conversation's; check against
-        # the follow-up's own model calls rather than assume it.
-        cumulative = abs(sum(reported.values()) - sum(usage.values()) - sum(own.values())) < abs(sum(reported.values()) - sum(own.values()))
+        # A resumed run has reported its own calls' usage but the whole conversation's cost
+        # (Claude Code restores its cost tracker, and `modelUsage` with it). Check each against
+        # the follow-up's own model calls rather than assume; with nothing to check, usage is
+        # taken as the run's own and cost as cumulative, as documented.
+        first_total, own_total = sum(usage.values()), sum(own.values())
+        cumulative = bool(own_total) and abs(sum(reported.values()) - first_total - own_total) < abs(sum(reported.values()) - own_total)
+        tracked = sum(int(model.get(field) or 0) for model in (later.get("modelUsage") or {}).values() if isinstance(model, dict) for field in MODEL_USAGE_FIELDS)
+        cost_cumulative = abs(tracked - first_total - own_total) < abs(tracked - own_total) if tracked and own_total else True
         usage = reported if cumulative else {field: usage[field] + reported[field] for field in USAGE_FIELDS}
         later_cost = later.get("total_cost_usd")
         if isinstance(cost, (int, float)) and isinstance(later_cost, (int, float)):
-            cost = later_cost if cumulative else cost + later_cost
+            cost = later_cost if cost_cumulative else cost + later_cost
         turns = later.get("num_turns") if cumulative else (turns or 0) + (later.get("num_turns") or 0)
     seconds = round(time.monotonic() - started, 1)
     hook_ran = None
@@ -160,7 +166,8 @@ def run_arm(arm: str, args, question: str, mcp_config: Path, out: Path, number: 
     if followup:
         # Raw figures, so the totals can be recomputed if Claude Code reports resumed runs differently.
         row["first_question"] = first | {"usage": first_usage, "turns": first_turns}
-        row["followup_reported"] = {"usage": reported, "cost_usd_estimate": later_cost, "turns": later.get("num_turns"), "own_calls": own, "cumulative": cumulative}
+        row["followup_reported"] = {"usage": reported, "cost_usd_estimate": later_cost, "turns": later.get("num_turns"), "own_calls": own,
+                                    "model_usage_tokens": tracked, "cumulative": cumulative, "cost_cumulative": cost_cumulative}
         row["followup_tokens"] = row["total_tokens"] - first["tokens"]
         row["followup_cost_usd_estimate"] = cost - first["cost"] if isinstance(cost, (int, float)) and isinstance(first["cost"], (int, float)) else None
     return row
