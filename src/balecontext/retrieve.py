@@ -447,12 +447,15 @@ def context(project: Project, query: str, budget: int = 3000, session: dict | No
                             following.append(callee)
                 level = following
 
+        # When the entry is a class header ("How does a ModelForm ... is_valid()"), the first
+        # function seed carries the behaviour, so its chain is followed in full.
+        lead = next((position for position, (_, entry, _) in enumerate(seeds) if entry.kind != "class"), None)
         for position, (_, entry, matched) in enumerate(seeds):
             item = {"id": entry.id, "path": entry.path, "name": entry.name, "kind": entry.kind, "start": entry.start, "end": entry.end}
             plan(item, "entry" if position == 0 else ("matches " + ", ".join(sorted(matched)) if matched else "match"))
             if entry.kind != "class":
                 # The entry's chain may continue in another module (res.render -> app.render).
-                walk(item, 4 if position == 0 else 1, cross=position == 0)
+                walk(item, 4 if position == lead else 1, cross=position == lead)
         # Then the chain where it leaves this file: calls into other modules, calls on objects of
         # unknown type, and subclass overrides of the methods shown. Those near the entry or named
         # like the question are followed (shown if budget is left, else named in a PARTIAL verdict);
@@ -471,6 +474,21 @@ def context(project: Project, query: str, budget: int = 3000, session: dict | No
 
         # Named like the question first (`adapter.send` for "sends a request"), then nearest the entry.
         reach.sort(key=lambda pair: (not named_like_question(pair[1][0]), depth_of.get(pair[0]["id"], 0)))
+        # Classes the question names and their project base classes: an override in one of them is
+        # the code that runs ("How does a ModelForm validate ..." -> BaseModelForm._post_clean), so its
+        # calls are followed like any other call on the path.
+        lineage: set[tuple[str, str]] = set()
+        frontier = [table.entries[index] for identifier in parsed.identifiers if identifier.is_class
+                    for index in table.by_leaf.get(identifier.leaf.lower(), ()) if table.entries[index].kind == "class"]
+        queue = [(entry.path, entry.name) for entry in frontier]
+        while queue and len(lineage) < 20:
+            path, name = queue.pop(0)
+            if (path, name) in lineage:
+                continue
+            lineage.add((path, name))
+            queue += [(row["path"], row["name"]) for row in db.execute(
+                "SELECT b.path, b.name FROM nodes c JOIN edges e ON e.source=c.id AND e.relation='inherits' JOIN nodes b ON b.id=e.target "
+                "WHERE c.path=? AND c.name=? AND b.kind='class'", (path, name))]
         wide = limit > FIRST_RESPONSE_CAP
         outward_limit = 2 * OUTWARD_LIMIT if wide else OUTWARD_LIMIT
         followed = 0
@@ -485,7 +503,7 @@ def context(project: Project, query: str, budget: int = 3000, session: dict | No
                 followed += 1
                 plan(item, role)
                 main_ids.add(item["id"])
-                if role.startswith("overrides"):
+                if role.startswith("overrides") and (item["path"], item["name"].rsplit(".", 1)[0]) not in lineage:
                     pass
                 elif wide:
                     deferred.append(item)
@@ -662,7 +680,7 @@ def context(project: Project, query: str, budget: int = 3000, session: dict | No
         # The hook's saved file shows the entry's own chain in full, outlines long calls followed
         # outside it, and lists helpers of those calls by name.
         omitted_items = [{k: item[k] for k in ("id", "path", "name", "start", "end")} | {"role": role} for item, role in not_included]
-        return {"text": text, "sources": used, "map": map_items, "chain": sorted(chain_ids), "helpers": sorted(helper_ids), "not_included": omitted_items, "followup": followup, "edges": evidence_edges, "verdict": verdict, "strong": strong, "entry_identifier": bool(seeds and seeds[0][2]), "estimated_tokens": estimate(text), "budget": limit, "token_method": "ceil(UTF-8 bytes / 4); estimate only", "eligible_corpus_estimated_tokens": math.ceil(baseline / 4), "measurement_note": "Context size only. This is not total model-token savings or subscription usage."}
+        return {"text": text, "sources": used, "map": map_items, "chain": sorted(chain_ids), "deep": {item["id"]: depth_of.get(item["id"], 0) for item in main_chain if depth_of.get(item["id"], 0) >= 2 and not named_like_question(item)}, "helpers": sorted(helper_ids), "not_included": omitted_items, "followup": followup, "edges": evidence_edges, "verdict": verdict, "strong": strong, "entry_identifier": bool(seeds and seeds[0][2]), "estimated_tokens": estimate(text), "budget": limit, "token_method": "ceil(UTF-8 bytes / 4); estimate only", "eligible_corpus_estimated_tokens": math.ceil(baseline / 4), "measurement_note": "Context size only. This is not total model-token savings or subscription usage."}
 
 
 def expand(project: Project, ids: list[str], budget: int = 4000, session: dict | None = None) -> dict:

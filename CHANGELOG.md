@@ -75,6 +75,15 @@
   and cost. Four-question conversations for requests and Django are in `benchmarks/questions/`.
 - `benchmarks/share_results.py` bundles one paired test (summary, per-question figures,
   per-call usage, tool calls and answers) into a single `share.md`.
+- A call on `self` reaches a method inherited from a project base class (`self.render()` in
+  an errors mixin finds `RenderableMixin.render`); the index rebuilds once (schema 9).
+- When the question names a class, overrides in that class or its project bases are followed
+  like any other call ("How does a ModelForm validate its instance" reaches
+  `BaseModelForm._post_clean` and `construct_instance`). When the entry is a class header, the
+  first function match gets the full call chain.
+- In the hook's saved file, a long call two steps from the entry, or a medium one three or
+  more steps away, that the question does not name is outlined (the requests trace keeps the
+  redirect loop whole and outlines its auth and proxy helpers).
 - A test or doc is never the entry point unless the question asks for tests or docs, even
   when it is named exactly like an identifier in the question (a test called `no_proxy`).
 - After "the", "a" and similar words, a plain word is not taken as a function's name

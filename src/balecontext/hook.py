@@ -27,6 +27,7 @@ KEEP_OVERFLOW_FILES = 20
 KEEP_SESSIONS = 50
 # Outside the entry's own chain, a definition longer than this that the question does not name is outlined.
 LONG_OUTSIDE = 30
+LONG_DEEP = 15
 # Claude Code keeps only a 2,000-character preview of hook context over 10,000 characters.
 MAX_CHARS = 9500
 HEADER = (
@@ -115,6 +116,8 @@ def _overflow(project: Project, prompt: str, text: str, response: dict, session:
     by_heading = {f"{s['path']}:{s['start']}-{s['end']} {s['name']}": s for s in big["sources"]}
     helpers = set(big.get("helpers", []))
     chain = set(big.get("chain", []))
+    # How far the chain's own definitions are from the entry, for those the question does not name.
+    deep = big.get("deep", {})
     shown: list[str] = []
     listed: list[str] = []
     outlined: list[str] = []
@@ -136,7 +139,7 @@ def _overflow(project: Project, prompt: str, text: str, response: dict, session:
         named = _named_like(source.get("name", key), words)
         if source.get("id") in helpers and not named:
             listed.append(_one_line(heading, block))
-        elif source.get("id") in helpers or (source.get("id") not in chain and len(_numbered(block)) > LONG_OUTSIDE and not named):
+        elif source.get("id") in helpers or (not named and len(_numbered(block)) > _outline_above(source.get("id"), chain, deep)):
             shown.append(_outline(block))
             outlined.append(source.get("name", key))
         else:
@@ -177,6 +180,19 @@ def _overflow(project: Project, prompt: str, text: str, response: dict, session:
 
 def _numbered(block: str) -> list[str]:
     return [line for line in block.splitlines() if re.match(r"\d+: ", line)]
+
+
+def _outline_above(item_id: str | None, chain: set, deep: dict) -> float:
+    """Lines above which a definition the question does not name is outlined in the saved file.
+
+    The entry and its direct calls stay whole; a long call two steps away, and a medium one three
+    or more steps away (`rebuild_auth` under `resolve_redirects`), become outlines, as does a long
+    call followed outside the chain.
+    """
+    if item_id not in chain:
+        return LONG_OUTSIDE
+    depth = deep.get(item_id, 0)
+    return LONG_DEEP if depth >= 3 else LONG_OUTSIDE if depth == 2 else float("inf")
 
 
 def _named_like(name: str, words: set[str]) -> bool:

@@ -171,6 +171,30 @@ class RankingTest(unittest.TestCase):
         self.assertNotIn("session", rank.parse("How are cookies saved on the Session?").prose_words)
         self.assertIn("compose", rank.parse("How does the compose function run middleware?").prose_words)
 
+    def test_a_call_on_self_reaches_a_method_inherited_from_a_base_class(self):
+        (self.root / "widgets").mkdir()
+        (self.root / "widgets/utils.py").write_text(
+            "class RenderableMixin:\n    def render(self, template_name=None):\n        return self.renderer.render(template_name, self.get_context())\n\n"
+            "    def get_context(self):\n        return {'errors': self}\n\n\n"
+            "class ErrorListMixin(RenderableMixin):\n    def as_ul(self):\n        return self.render(self.template_name_ul)\n", encoding="utf-8")
+        text = context(self.project, "How does ErrorListMixin.as_ul() produce its HTML?")["text"]
+        self.assertIn('"name": "RenderableMixin.render", "kind": "method", "role": "called by ErrorListMixin.as_ul at line 11"', text)
+        self.assertIn('"name": "RenderableMixin.get_context", "kind": "method", "role": "called by RenderableMixin.render at line 3"', text)
+
+    def test_an_override_in_a_class_the_question_names_is_followed(self):
+        (self.root / "shop").mkdir()
+        (self.root / "shop/forms.py").write_text(
+            "class OrderBase:\n    def is_complete(self):\n        self._finish()\n        return True\n\n    def _finish(self):\n        pass\n\n\n"
+            "class PaidOrderBase(OrderBase):\n    def _finish(self):\n        settle_invoice(self)\n\n\n"
+            "def settle_invoice(order):\n    order.paid = True\n\n\n"
+            "class PaidOrder(PaidOrderBase):\n    pass\n", encoding="utf-8")
+        names = [s["name"] for s in context(self.project, "What happens when a PaidOrder runs is_complete()?")["sources"]]
+        self.assertIn("PaidOrderBase._finish", names)
+        self.assertIn("settle_invoice", names)
+        # A question that names no subclass only lists the override, without following it.
+        plain = [s["name"] for s in context(self.project, "What happens in OrderBase.is_complete()?")["sources"]]
+        self.assertNotIn("settle_invoice", plain)
+
     def test_first_response_is_capped_and_expand_returns_full_source(self):
         response = context(self.project, PROSE, 8000)
         self.assertLessEqual(response["estimated_tokens"], 4000)

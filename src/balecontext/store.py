@@ -11,7 +11,7 @@ from pathlib import Path
 from .extract import extract, resolve
 from .files import scan
 
-SCHEMA = 8
+SCHEMA = 9
 
 
 class Project:

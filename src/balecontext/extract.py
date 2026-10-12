@@ -344,6 +344,42 @@ def resolve(nodes: list[dict], refs: list[dict]) -> list[dict]:
             if destination:
                 edges.append(edge(ref["source"], destination, "imports", line=ref.get("line")))
             bindings[(path, ref.get("scope", ""), ref["name"])] = (target, imported_symbol)
+    def lexical(ref: dict) -> str | None:
+        """A name defined in this file's enclosing scopes or bound by an import."""
+        path = by_id[ref["source"]]["path"]
+        scope_parts = ref.get("scope", "").split(".") if ref.get("scope") else []
+        head, _, suffix = ref["name"].partition(".")
+        for length in range(len(scope_parts), -1, -1):
+            scope = ".".join(scope_parts[:length])
+            found = symbol(path, ".".join(filter(None, [scope, ref["name"]])))
+            binding = bindings.get((path, scope, head))
+            if not found and binding:
+                found = symbol(binding[0], ".".join(filter(None, [binding[1], suffix])))
+            if found:
+                return found
+        return None
+
+    # Project base classes of each class, in declaration order, for `self.render()` defined on a base.
+    bases: dict[str, list[str]] = {}
+    for ref in refs:
+        if ref["relation"] == "inherits":
+            base = lexical(ref)
+            if base and by_id[base]["kind"] == "class" and base != ref["source"]:
+                bases.setdefault(ref["source"], []).append(base)
+
+    def inherited(class_id: str | None, attr: str) -> str | None:
+        queue, seen = list(bases.get(class_id, [])) if class_id else [], set()
+        while queue:
+            base = queue.pop(0)
+            if base in seen:
+                continue
+            seen.add(base)
+            found = symbol(by_id[base]["path"], by_id[base]["name"] + "." + attr)
+            if found:
+                return found
+            queue += bases.get(base, [])
+        return None
+
     for ref in refs:
         if ref["relation"] == "imports":
             continue
@@ -352,7 +388,11 @@ def resolve(nodes: list[dict], refs: list[dict]) -> list[dict]:
         scope_parts = ref.get("scope", "").split(".") if ref.get("scope") else []
         destination = None
         if name.startswith(("self.", "cls.", "this.")) and ref.get("class_name"):
-            destination = symbol(path, ref["class_name"] + "." + name.split(".", 1)[1])
+            attr = name.split(".", 1)[1]
+            destination = symbol(path, ref["class_name"] + "." + attr)
+            if not destination and "." not in attr:
+                # A method the class inherits from a project base class (`self.render()` in a mixin).
+                destination = inherited(symbol(path, ref["class_name"]), attr)
         for length in range(len(scope_parts), -1, -1):
             scope = ".".join(scope_parts[:length])
             if destination:
