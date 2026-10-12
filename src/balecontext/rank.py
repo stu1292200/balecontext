@@ -4,6 +4,7 @@ from __future__ import annotations
 import math
 import re
 from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import PurePosixPath
 
 # Question fillers and instructions that agents put in queries ("cite the
@@ -28,6 +29,7 @@ DOC_EXTENSIONS = (".md", ".rst", ".txt", ".adoc", ".mdx")
 TOKEN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*(?:\(\))?")
 
 
+@lru_cache(maxsize=1 << 16)
 def stem(word: str) -> str:
     """Tiny suffix stripper applied to both query and index tokens."""
     word = word.lower()
@@ -48,12 +50,12 @@ def stem(word: str) -> str:
     return word
 
 
+IDENTIFIER_PART = re.compile(r"[A-Z]+(?=[A-Z][a-z])|[A-Z]?[a-z]+|[A-Z]+|[0-9]+")
+
+
 def split_identifier(text: str) -> list[str]:
     """`URLResolver._clean_fields` -> url, resolver, clean, fields (lowercase, unstemmed)."""
-    parts: list[str] = []
-    for chunk in re.split(r"[^A-Za-z0-9]+", text):
-        parts.extend(re.findall(r"[A-Z]+(?=[A-Z][a-z])|[A-Z]?[a-z]+|[A-Z]+|[0-9]+", chunk))
-    return [part.lower() for part in parts if part]
+    return [part.lower() for part in IDENTIFIER_PART.findall(text)]
 
 
 def path_class(path: str) -> str:
@@ -173,18 +175,23 @@ class SymbolTable:
         self.by_leaf: dict[str, list[int]] = {}
         self.by_token: dict[str, list[int]] = {}
         self.by_path_token: dict[str, list[int]] = {}
+        # A file holds many definitions; its path is tokenised once.
+        by_path: dict[str, tuple[set[str], str, str]] = {}
         for row in rows:
             if row["kind"] in {"file", "chunk"}:
                 continue
             segments = row["name"].split(".")
-            pure = PurePosixPath(row["path"])
+            if row["path"] not in by_path:
+                pure = PurePosixPath(row["path"])
+                by_path[row["path"]] = ({stem(t) for part in pure.parts[:-1] for t in split_identifier(part)} | {stem(t) for t in split_identifier(pure.stem)},
+                                        stem(pure.stem.lower()), path_class(row["path"]))
+            path_tokens, file_stem, category = by_path[row["path"]]
+            leaf_tokens = {stem(t) for t in split_identifier(segments[-1])}
             entry = Entry(
                 row["id"], row["path"], row["name"], row["kind"], row["start"], row["end"], segments[-1].lower().lstrip("#"),
                 [segment.lower() for segment in segments[:-1]],
-                {stem(t) for t in split_identifier(row["name"])},
-                {stem(t) for t in split_identifier(segments[-1])},
-                {stem(t) for part in pure.parts[:-1] for t in split_identifier(part)} | {stem(t) for t in split_identifier(pure.stem)},
-                stem(pure.stem.lower()), path_class(row["path"]),
+                {stem(t) for t in split_identifier(row["name"])} if len(segments) > 1 else leaf_tokens,
+                leaf_tokens, path_tokens, file_stem, category,
             )
             index = len(self.entries)
             self.entries.append(entry)

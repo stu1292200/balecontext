@@ -73,6 +73,12 @@
 - `--followup-file` takes several questions (one file each, or one file with questions
   separated by `---`) for a longer conversation, and reports each question's own tokens
   and cost. Four-question conversations for requests and Django are in `benchmarks/questions/`.
+- `benchmarks/session_report.py` summarises the session files Claude Code saved for a
+  paired run (record kinds and sizes, saved prompt settings, each call's cache numbers),
+  to explain a resumed question that re-writes the cache instead of reading it.
+- The hook builds its symbol table about four times faster (each file path is split
+  once; one compiled pattern splits identifiers), so a Django prompt waits about 2.3 s
+  instead of 4.1 s for the same evidence.
 - `benchmarks/share_results.py` bundles one paired test (summary, per-question figures,
   per-call usage, tool calls and answers) into a single `share.md`.
 - A call on `self` reaches a method inherited from a project base class (`self.render()` in

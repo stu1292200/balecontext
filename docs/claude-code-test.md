@@ -107,3 +107,9 @@ The results folder contains your local paths, so it is ignored by git. To share 
 test, run `py benchmarks\share_results.py RESULTS_FOLDER`: it writes `share.md` in that
 folder with the questions, the summary, each question's tokens and cost, every model
 call's usage for run 2, and run 2's tool calls and answers for both arms.
+
+When a later question costs more than expected, run
+`py benchmarks\session_report.py RESULTS_FOLDER --run 2` as well. It reads the session files
+Claude Code saved for that run (in your user folder's `.claude\projects`) and writes
+`sessions.md`: the kind and size of every saved record, the prompt settings Claude Code
+saved, and each model call's cache numbers. It contains no prompt, code or answer text.
