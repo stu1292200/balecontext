@@ -73,6 +73,8 @@
 - `--followup-file` takes several questions (one file each, or one file with questions
   separated by `---`) for a longer conversation, and reports each question's own tokens
   and cost. Four-question conversations for requests and Django are in `benchmarks/questions/`.
+- `benchmarks/share_results.py` bundles one paired test (summary, per-question figures,
+  per-call usage, tool calls and answers) into a single `share.md`.
 - A test or doc is never the entry point unless the question asks for tests or docs, even
   when it is named exactly like an identifier in the question (a test called `no_proxy`).
 - After "the", "a" and similar words, a plain word is not taken as a function's name

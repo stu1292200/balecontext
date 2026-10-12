@@ -103,5 +103,7 @@ py benchmarks\claude_pair.py C:\path\to\requests-test --question-file benchmarks
 py benchmarks\claude_pair.py C:\path\to\django-test --question-file benchmarks\questions\django-form-is-valid.txt --followup-file benchmarks\questions\django-chat-followups.txt --runs 3
 ```
 
-The results folder contains your local paths, so it is ignored by git; share
-`summary.json` and the answers by hand.
+The results folder contains your local paths, so it is ignored by git. To share one
+test, run `py benchmarks\share_results.py RESULTS_FOLDER`: it writes `share.md` in that
+folder with the questions, the summary, each question's tokens and cost, every model
+call's usage for run 2, and run 2's tool calls and answers for both arms.
