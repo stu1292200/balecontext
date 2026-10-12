@@ -1176,7 +1176,7 @@ class HookTest(unittest.TestCase):
 
     def test_installer_adds_the_hook_once_and_keeps_other_settings(self):
         import json
-        from balecontext.integrations import install
+        from balecontext.integrations import HOOK_TIMEOUT, install
         settings = self.root / ".claude/settings.json"
         settings.parent.mkdir()
         settings.write_text(json.dumps({"permissions": {"allow": ["Read"]}}), encoding="utf-8")
@@ -1195,12 +1195,15 @@ class HookTest(unittest.TestCase):
         self.assertEqual(len(data["hooks"]["PreCompact"][0]["hooks"]), 1)
         # An earlier install with part 1 alone gets the other parts added once.
         data["hooks"]["UserPromptSubmit"][0]["hooks"] = data["hooks"]["UserPromptSubmit"][0]["hooks"][:1]
+        data["hooks"]["UserPromptSubmit"][0]["hooks"][0]["timeout"] = 30
         settings.write_text(json.dumps(data), encoding="utf-8")
         self.assertIn(".claude/settings.json", install(project, "claude", hook=True)["changed"])
         self.assertNotIn(".claude/settings.json", install(project, "claude", hook=True)["changed"])
         data = json.loads(settings.read_text(encoding="utf-8"))
         parts = [h["args"][4:] for group in data["hooks"]["UserPromptSubmit"] for h in group["hooks"]]
         self.assertEqual(sorted(parts), sorted([[]] + [["--part", str(n)] for n in range(2, 6)]))
+        # An earlier install's shorter time limit is raised too.
+        self.assertEqual({h["timeout"] for group in data["hooks"]["UserPromptSubmit"] for h in group["hooks"]}, {HOOK_TIMEOUT})
         with self.assertRaises(ValueError):
             install(project, "codex", hook=True)
         self.assertFalse((self.root / ".codex").exists())

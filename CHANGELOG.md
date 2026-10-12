@@ -225,6 +225,13 @@
   calls `load_middleware`) is sent with the entry. Django's `get_response` question grows from
   3,813 to 5,680 characters, the hard Django conversation by 190 characters; the requests
   conversations and the offline benchmark are unchanged.
+- The hook's time limit in Claude Code's settings is 120 seconds instead of 30, and the extra parts
+  wait up to 110 seconds for the pack. Baleegh's session reports showed the hook cancelled at 30
+  seconds on the first prompt of a hard Django run (Claude then searched with 8 tool calls, 102,745
+  tokens against 35,354 in the run where the hook finished), and 8 to 25 seconds per prompt on his
+  Windows PC against 2 to 5 here. `balecontext install --hook` raises the limit in an existing
+  settings file. Each line of `.balecontext/hook-log.jsonl` now also records how long the hook took
+  and how much of that was refreshing the index, so a slow machine can be understood from its log.
 - `benchmarks/claude_pair.py` writes `share.md` itself at the end of a test.
 - `benchmarks/share_results.py` bundles one paired test (summary, per-question figures,
   per-call usage, tool calls and answers) into a single `share.md`.

@@ -27,9 +27,10 @@ HOOK_BUDGET = 4000
 # model has the whole pack before its first call instead of reading a file in a second one.
 OVERFLOW_BUDGET = 12000
 EXTRA_PARTS = 4
-# A part waits this long for part 1 to hand it its piece, and gives up after PART_START if part 1
-# is not running (an older settings file, or a client that runs hooks one after another).
-PART_WAIT = 25.0
+# A part waits this long for part 1 to hand it its piece (a little less than the hook's time limit
+# in `integrations.HOOK_TIMEOUT`), and gives up after PART_START if part 1 is not running (an older
+# settings file, or a client that runs hooks one after another).
+PART_WAIT = 110.0
 PART_START = 5.0
 # Part 1 starts within this many seconds of the parts it hands over to.
 PART_SKEW = 3.0
@@ -60,11 +61,12 @@ def prompt_context(project: Project, prompt: str, budget: int = HOOK_BUDGET, ses
     return found[0] if found else None
 
 
-def prompt_pack(project: Project, prompt: str, budget: int = HOOK_BUDGET, session: dict | None = None) -> tuple[str, dict] | None:
+def prompt_pack(project: Project, prompt: str, budget: int = HOOK_BUDGET, session: dict | None = None, refresh: bool = True) -> tuple[str, dict] | None:
     """The hook text and the evidence response it was built from.
 
     With a session (one Claude Code conversation), source sent for an earlier prompt is named
-    instead of sent again, and what this prompt sends is added to the session.
+    instead of sent again, and what this prompt sends is added to the session. `refresh` is False
+    when the caller has refreshed the index itself.
     """
     prompt = (prompt or "").strip()
     if len(prompt) < 8 or prompt.startswith("/"):
@@ -72,7 +74,6 @@ def prompt_pack(project: Project, prompt: str, budget: int = HOOK_BUDGET, sessio
     parsed = rank.parse(prompt)
     if not parsed.identifiers and len(parsed.words) < 2:
         return None
-    refresh = True
     while budget >= 800:
         attempt = copy.deepcopy(session) if session is not None else None
         try:
@@ -487,7 +488,7 @@ def run_claude(stdin=None, stdout=None, part: int = 1) -> int:
             return _send_part(root, event, part, started, stdout)
     except Exception:  # A hook failure must never stop the user's prompt.
         return 0
-    text, response, folder, stamp = None, {}, root / ".balecontext" / "hook", None
+    text, response, folder, stamp, refreshed = None, {}, root / ".balecontext" / "hook", None, None
     try:
         session_id = str(event.get("session_id") or "")
         if event.get("hook_event_name") == "PreCompact":
@@ -499,7 +500,11 @@ def run_claude(stdin=None, stdout=None, part: int = 1) -> int:
         # Tells the parts that this prompt's part 1 is running, so they wait for its hand-off.
         (folder / f"working-{stamp}").touch()
         session = _load_session(root, session_id)
-        found = prompt_pack(Project(root), event.get("prompt", ""), session=session)
+        project = Project(root)
+        # Refreshed here, so the log says how long the refresh took apart from building the pack.
+        project.index()
+        refreshed = time.time()
+        found = prompt_pack(project, event.get("prompt", ""), session=session, refresh=False)
         if found:
             text, response = found
             if session is not None:
@@ -513,7 +518,8 @@ def run_claude(stdin=None, stdout=None, part: int = 1) -> int:
             stdout.flush()
         # One line per prompt, so a person (or the paired test) can confirm the hook ran.
         with open(root / ".balecontext" / "hook-log.jsonl", "a", encoding="utf-8") as log:
-            log.write(json.dumps({"time": round(time.time(), 3), "context_chars": len(text or "")}
+            log.write(json.dumps({"time": round(time.time(), 3), "context_chars": len(text or ""), "seconds": round(time.time() - started, 2)}
+                                 | ({"refresh_seconds": round(refreshed - started, 2)} if refreshed else {})
                                  | ({"part_chars": [len(p) for p in parts]} if parts else {})) + "\n")
     except Exception:
         pass
