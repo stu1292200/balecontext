@@ -492,6 +492,124 @@ class ResolveTest(unittest.TestCase):
         # A callable class no project class extends is not what the chain runs.
         self.assertNotIn("ChainValidator.__call__", names)
 
+    def test_what_runs_after_the_response_and_the_errors_its_handlers_catch_are_shown(self):
+        temporary = tempfile.TemporaryDirectory(prefix="balecontext-after-")
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        (root / "signals.py").write_text(
+            "class Signal:\n    def __init__(self):\n        self.receivers = []\n\n"
+            "    def connect(self, receiver):\n        self.receivers.append(receiver)\n\n"
+            "    def send(self, sender):\n        return [receiver(sender) for receiver in self.receivers]\n\n\n"
+            "request_started = Signal()\nrequest_finished = Signal()\n", encoding="utf-8")
+        (root / "response.py").write_text(
+            "from signals import request_finished\n\n\nclass Http404(Exception):\n    pass\n\n\n"
+            "class HttpResponse:\n    def __init__(self, content):\n        self.content = content\n        self._handler_class = None\n\n"
+            "    def close(self):\n        request_finished.send(sender=self._handler_class)\n", encoding="utf-8")
+        (root / "resolver.py").write_text(
+            "from response import Http404\n\n\nclass Resolver404(Http404):\n    pass\n\n\n"
+            "def resolve(path):\n    if path != '/':\n        raise Resolver404(path)\n    return 'index'\n", encoding="utf-8")
+        (root / "handler.py").write_text(
+            "from signals import request_started, request_finished\nfrom response import HttpResponse, Http404\nfrom resolver import resolve\n\n\n"
+            "def reset_urlconf(sender):\n    return None\n\n\nrequest_finished.connect(reset_urlconf)\n\n\n"
+            "class WSGIHandler:\n    def __call__(self, environ):\n        request_started.send(sender=self.__class__)\n"
+            "        response = self.get_response(environ)\n        response._handler_class = self.__class__\n        return response\n\n"
+            "    def get_response(self, environ):\n        try:\n            view = resolve(environ['PATH_INFO'])\n        except Exception as exc:\n"
+            "            if isinstance(exc, Http404):\n                return HttpResponse('not found')\n            raise\n        return HttpResponse(view)\n", encoding="utf-8")
+        response = context(Project(root), "How does WSGIHandler.__call__ handle a request?")
+        # The server closes the response once it is sent, and close reads what __call__ set on it.
+        self.assertIn("reads self._handler_class, which WSGIHandler.__call__ sets on response at line 17", response["text"])
+        # A function connected to the signal close sends runs then.
+        self.assertIn("runs on request_finished, which HttpResponse.close sends at line 14", response["text"])
+        # get_response answers "not found" for Resolver404 only because it is an Http404.
+        self.assertIn("raised by resolve at line 10; a subclass of Http404", response["text"])
+        self.assertEqual([source["name"] for source in response["sources"]][-3:], ["HttpResponse.close", "reset_urlconf", "Resolver404"])
+
+    def test_a_question_about_callers_gets_every_place_that_names_the_definition(self):
+        temporary = tempfile.TemporaryDirectory(prefix="balecontext-callers-")
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        (root / "tests").mkdir()
+        (root / "docs").mkdir()
+        (root / "settings.py").write_text(
+            "def merge_setting(request_setting, session_setting):\n    if session_setting is None:\n        return request_setting\n"
+            "    return {**session_setting, **request_setting}\n", encoding="utf-8")
+        (root / "sessions.py").write_text(
+            "from settings import merge_setting\n\n\nclass Session:\n    def request(self, method, url, headers=None, params=None):\n"
+            "        merged = merge_setting(headers, self.headers)\n        query = merge_setting(params, self.params)\n"
+            "        return self.send(method, url, merged, query)\n\n    def send(self, method, url, headers, params):\n"
+            "        return (method, url, headers, params)\n\n\ndef merge_environment(proxies, env):\n"
+            "    # merge_setting drops None values\n    return merge_setting(proxies, env)\n", encoding="utf-8")
+        (root / "tests/test_settings.py").write_text(
+            "from settings import merge_setting\n\n\ndef test_merge():\n    assert merge_setting({'a': 1}, None) == {'a': 1}\n", encoding="utf-8")
+        (root / "docs/api.md").write_text("# API\n\nmerge_setting merges two dicts.\n", encoding="utf-8")
+        response = context(Project(root), "Who calls merge_setting?")
+        text = response["text"]
+        self.assertEqual(response["kind"], "callers")
+        self.assertEqual([source["name"] for source in response["sources"]], ["merge_setting", "Session.request", "merge_environment"])
+        self.assertIn('"role": "calls merge_setting at lines 6, 7"', text)
+        self.assertIn("sessions.py:1: from settings import merge_setting  [imports it]", text)
+        # A test that calls it is listed before one that only imports it.
+        self.assertLess(text.index("tests/test_settings.py:5 test_merge:"), text.index("tests/test_settings.py:1:"))
+        self.assertEqual(response["verdict"], "COMPLETE")
+        self.assertIn("2 definitions in the code call it (3 call lines); 1 other line in the code names it; 2 lines in tests; 1 line in docs (not listed)", text)
+
+    def test_a_long_caller_is_shown_around_its_call_and_an_unknown_receiver_is_listed(self):
+        temporary = tempfile.TemporaryDirectory(prefix="balecontext-callsite-")
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        long_job = ("def long_job(items):\n    runner = Runner()\n" + "".join(f"    total_{i} = len(items) + {i}\n" for i in range(20))
+                    + "    result = runner.go()\n" + "".join(f"    total_{i} += {i}\n" for i in range(20)) + "    return result\n")
+        (root / "runner.py").write_text("class Runner:\n    def go(self):\n        return 1\n\n\ndef drive(task):\n    return task.go()\n\n\n" + long_job, encoding="utf-8")
+        response = context(Project(root), "What would break if I changed Runner.go?")
+        text = response["text"]
+        self.assertIn('"role": "calls go at line 32"', text)
+        self.assertIn("32:     result = runner.go()", text)
+        self.assertNotIn("total_10 = len(items) + 10", text)
+        self.assertIn("[Excerpt ends around each call: lines of long_job away from its calls to go are not shown.]", text)
+        self.assertIn("=== POSSIBLE CALLS of go (receiver type not known; one line each)\nrunner.py:7 drive: return task.go()", text)
+        self.assertEqual(response["verdict"], "COMPLETE")
+
+    def test_a_call_of_the_method_a_mixin_declares_reaches_the_class_that_defines_it(self):
+        temporary = tempfile.TemporaryDirectory(prefix="balecontext-mixin-")
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        (root / "sessions.py").write_text(
+            "class RedirectMixin:\n    def send(self, request): ...\n\n    def follow(self, request):\n        return self.send(request)\n\n\n"
+            "class Session(RedirectMixin):\n    def send(self, request):\n        return request\n\n    def request(self, url):\n        return self.send(url)\n", encoding="utf-8")
+        response = context(Project(root), "Who calls Session.send?")
+        self.assertEqual([source["name"] for source in response["sources"]], ["Session.send", "RedirectMixin.follow", "Session.request"])
+        self.assertIn('"role": "calls send at line 5 through RedirectMixin.send', response["text"])
+        self.assertIn("[declared in RedirectMixin; Session.send defines it]", response["text"])
+
+    def test_another_class_using_the_same_name_on_self_is_counted_not_listed(self):
+        temporary = tempfile.TemporaryDirectory(prefix="balecontext-ownname-")
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        (root / "tests").mkdir()
+        (root / "handler.py").write_text(
+            "class BaseHandler:\n    def get_response(self, request):\n        return request\n\n\n"
+            "class WSGIHandler(BaseHandler):\n    def __call__(self, environ):\n        return self.get_response(environ)\n", encoding="utf-8")
+        (root / "middleware.py").write_text(
+            "class Middleware:\n    def __init__(self, get_response):\n        self.get_response = get_response\n\n"
+            "    def __call__(self, request):\n        return self.get_response(request)\n", encoding="utf-8")
+        (root / "tests/test_middleware.py").write_text(
+            "class MiddlewareTests:\n    def test_call(self):\n        def get_response(request):\n            return request\n        return get_response\n", encoding="utf-8")
+        response = context(Project(root), "Who calls BaseHandler.get_response?")
+        self.assertIn('"role": "calls get_response at line 8"', response["text"])
+        # Each middleware's get_response is the next handler it was given, not this method.
+        self.assertNotIn("middleware.py", response["text"])
+        self.assertIn("3 lines name another class's or test's own get_response (not listed)", response["text"])
+
+    def test_only_a_question_about_callers_reads_as_one(self):
+        from balecontext.retrieve import CALLERS_QUESTION
+        for question in ("Who calls merge_setting?", "Where is WSGIRequest used?", "What would break if I changed Session.send?",
+                         "Which functions call app.handle?", "Find the call sites of compose", "What depends on get_resolver?",
+                         "Where is Session.send called from?"):
+            self.assertTrue(CALLERS_QUESTION.search(question), question)
+        for question in ("What calls does Session.send make?", "How does Session.send work?", "Trace how Django handles a request",
+                         "What does resolve_redirects call?"):
+            self.assertFalse(CALLERS_QUESTION.search(question), question)
+
     def test_tags_the_question_names_lead_and_calls_resolve_near_the_caller(self):
         temporary = tempfile.TemporaryDirectory(prefix="balecontext-tags-")
         self.addCleanup(temporary.cleanup)
@@ -805,6 +923,66 @@ class HookTest(unittest.TestCase):
         self.assertIn("billing.py:2-9 PaymentGateway.audit_ledger (called by PaymentGateway.settle_account at line 50): Write the order to the audit ledger.", rest)
         self.assertNotIn("order.audit += 3", rest)
         self.assertEqual([s["name"] for s in response["overflow_sources"] if s["path"] == "billing.py"], ["PaymentGateway.settle_account"])
+
+    def test_a_callers_list_cut_short_goes_on_in_the_parts(self):
+        (self.root / "settings.py").write_text("def merge_setting(request_setting, session_setting):\n    return request_setting or session_setting\n", encoding="utf-8")
+        (self.root / "tests").mkdir()
+        (self.root / "tests/test_settings.py").write_text(
+            "from settings import merge_setting\n\n\n" + "".join(f"def test_merge_{i}():\n    assert merge_setting({i}, None) == {i}\n\n\n" for i in range(60)), encoding="utf-8")
+        from balecontext import hook
+        project = Project(self.root)
+        project.index()
+        text, response = hook.prompt_pack(project, "Who calls merge_setting?")
+        self.assertIn("[and 21 more lines]", text)
+        self.assertIn("the rest of the evidence (the rest of TESTS naming merge_setting) follows in BaleContext part 2 below", text)
+        rest = "\n".join(response["parts"])
+        self.assertIn("=== TESTS naming merge_setting (continued from the pack above)", rest)
+        # Each test line arrives once, in the pack or in the parts, which end with the count.
+        for i in range(60):
+            self.assertEqual((text + rest).count(f"assert merge_setting({i}, None) == {i}"), 1)
+        self.assertIn("COVERAGE: COMPLETE. Every line in the project that names merge_setting is shown or listed above", rest)
+
+    def test_a_callers_question_may_name_a_plain_word(self):
+        (self.root / "compose.py").write_text("def compose(middleware):\n    return middleware\n\n\ndef route(app):\n    return compose(app.middleware)\n", encoding="utf-8")
+        from balecontext import hook
+        project = Project(self.root)
+        project.index()
+        found = hook.prompt_pack(project, "Who calls compose?")
+        self.assertIsNotNone(found)
+        self.assertIn("route (calls compose at line 6)", found[0])
+        # A word the question does not write as a name gets no pack.
+        self.assertIsNone(hook.prompt_pack(project, "Where is the compose step used?"))
+
+    def test_an_outline_covers_the_whole_definition_behind_a_cut_block(self):
+        body = "".join(f"    if kind == {i}:\n        return handle_{i}(request)\n" for i in range(60))
+        (self.root / "dispatch.py").write_text("def dispatch(request, kind):\n" + body + "    return None\n", encoding="utf-8")
+        from balecontext import hook
+        project = Project(self.root)
+        project.index()
+        with project.connect() as db:
+            item_id = db.execute("SELECT id FROM nodes WHERE name='dispatch'").fetchone()[0]
+        block = ("=== dispatch.py:1-122 dispatch (called by route at line 3)\n" + "\n".join(f"{n}: pass" for n in range(1, 31))
+                 + "\n[Excerpt ends at line 30 of 122; read the rest from the file.]")
+        outline = hook._outline(hook._whole(project, block, item_id))
+        # The last cases are the ones a cut excerpt hid.
+        self.assertIn("120:     if kind == 59:", outline)
+        self.assertIn("121:         return handle_59(request)", outline)
+        self.assertNotIn("[Excerpt ends", outline)
+
+    def test_parts_that_would_not_fit_outline_definitions_the_question_does_not_name(self):
+        steps = "".join(f"def step_{i}(order):\n" + "".join(f"    order.total += {j}  # adjust the order total\n" for j in range(40)) + "    return order\n\n" for i in range(8))
+        entry = "def checkout_order(order):\n" + "".join(f"    order = step_{i}(order)\n" for i in range(8)) + "    return order\n"
+        (self.root / "shop.py").write_text(steps + entry, encoding="utf-8")
+        from balecontext import hook
+        project = Project(self.root)
+        project.index()
+        self.assertGreater(len(hook.prompt_pack(project, "How does checkout_order work?")[1]["parts"]), 1)
+        with mock.patch.object(hook, "EXTRA_PARTS", 1):
+            text, response = hook.prompt_pack(project, "How does checkout_order work?")
+        # One part instead of a file to read in a second call.
+        self.assertEqual(len(response["parts"]), 1)
+        self.assertIn("as an outline of calls, branches and returns", response["parts"][0])
+        self.assertIn("follows in BaleContext part 2 below", text)
 
     def test_follow_up_about_sent_code_gets_only_new_source_it_names(self):
         steps = "".join(f"def step_{i}(order):\n" + "".join(f"    order.total += {j}  # adjust the order total\n" for j in range(40)) + "    return order\n\n" for i in range(8))

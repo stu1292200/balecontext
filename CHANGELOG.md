@@ -179,6 +179,42 @@
   the hook's five pieces; the requests and four-question Django conversations are unchanged. Of
   the 34 gold questions, Hono's error handling shows 2 of 3 expected definitions instead of 1, four
   other hook packs grow slightly, and none loses an expected definition.
+- The answer checks of the newest paired tests found the hook's Django request answer missing
+  part of the exception handling and the clean-up after the response; that evidence is now sent.
+  In the hook's extra parts, an outline of a definition the larger pack cut short covers the whole
+  definition, so `response_for_exception` shows every exception it maps instead of its first thirty
+  lines. After the question's path, and ahead of the deep helpers, come: the one method of another
+  class that reads what the entry sets on an object it holds (`HttpResponseBase.close`, which the
+  server calls once the response is sent, reads the `_handler_class` that `WSGIHandler.__call__`
+  sets); the functions connected to a project signal sent on the path (`reset_urlconf`,
+  `close_old_connections` and `close_caches` run on `request_finished`); and an exception class
+  raised on the path whose project base class the shown code catches (`Resolver404`, which
+  `response_for_exception` turns into a 404 because it is an `Http404`). Each extra part is now
+  filled before the next one starts, and evidence that would still need more than the four parts
+  outlines its longest definitions the question does not name, instead of leaving it all to a file
+  read in a second call. The hard Django conversation's evidence grows from 82,992 to 87,163
+  characters and fits in the parts; the requests conversation grows by 652 characters and the
+  four-question Django conversation is unchanged, as are the offline benchmark's results. The hook
+  now refreshes the index once per prompt instead of once for each pack it builds, and definitions
+  are indexed by name, so with the new checks the hard Django question's hook takes 3.1 to 3.8
+  seconds, against 3.9 before.
+- A question about who calls a definition, where it is used, or what would break if it changed
+  ("Who calls get_resolver?", "Where is Session.send called from?", "What would break if I changed
+  BaseHandler.get_response?") gets every place that names the definition, instead of the calls the
+  definition makes. The definitions that call it are shown, whole when short and otherwise around
+  each call, with what calls them in turn. Calls whose receiver type is not known, imports,
+  overrides and other lines that name it follow one line each, then the tests, calls first. A call
+  of the method a base class only declares counts (`self.send` in `SessionRedirectMixin` runs
+  `Session.send`); `self.get_response` in a class of its own (each middleware, a test case) is that
+  class's own attribute, so it is counted, not listed. The verdict counts what was found and says
+  that a call made through another name (an alias, a callback, getattr) shows only where the name
+  is written. A plain word names the definition where the question writes it as one ("who calls
+  compose"), and in the hook a list cut short goes on in the extra parts. Django's `get_resolver`
+  gets 11 callers and 21 call lines in an 8,827-character pack plus one 3,794-character part;
+  requests' `merge_setting` gets its 3 callers and 8 call lines in 3,952 characters, where the trace
+  pack it got before missed `merge_environment_settings` yet said COMPLETE. None of the 48 existing
+  benchmark and conversation questions reads as a callers question. New paired-test conversations
+  `requests-callers` and `django-callers` measure this kind of task.
 - `benchmarks/claude_pair.py` writes `share.md` itself at the end of a test.
 - `benchmarks/share_results.py` bundles one paired test (summary, per-question figures,
   per-call usage, tool calls and answers) into a single `share.md`.

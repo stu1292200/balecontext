@@ -1,0 +1,3 @@
+What would break if should_bypass_proxies always returned False? Cite the relevant source files and line numbers. Do not modify any files.
+---
+Where is Session.send called from? Cite the relevant source files and line numbers. Do not modify any files.

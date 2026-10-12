@@ -51,6 +51,7 @@ class Project:
                     id TEXT PRIMARY KEY, path TEXT NOT NULL, name TEXT NOT NULL, kind TEXT NOT NULL,
                     start INTEGER NOT NULL, end INTEGER NOT NULL, snippet TEXT NOT NULL);
                 CREATE INDEX IF NOT EXISTS nodes_path ON nodes(path);
+                CREATE INDEX IF NOT EXISTS nodes_name ON nodes(name);
                 CREATE TABLE IF NOT EXISTS refs (path TEXT NOT NULL, payload TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS edges (
                     source TEXT NOT NULL, target TEXT NOT NULL, relation TEXT NOT NULL, evidence TEXT NOT NULL,

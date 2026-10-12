@@ -1,0 +1,1 @@
+Who calls get_resolver in Django, and what does each caller use it for? Cite the relevant source files and line numbers. Do not modify any files.

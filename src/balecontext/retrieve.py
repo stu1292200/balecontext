@@ -99,6 +99,22 @@ LONG_BODY = 60
 # A last rebuild shows long definitions whole when the budget still has room.
 FULL_BODY = 160
 HELPER_BODY = 30
+# "What calls X", "where is X used", "what would break if X changed": the answer is every place
+# that names X, so such a question gets X's callers instead of the calls X makes.
+CALLERS_QUESTION = re.compile(
+    r"\b(?:who|what)\s+(?:else\s+)?(?:calls|invokes|uses|references|imports|depends on|relies on)\b(?!\s+(?:does|do|did|are|is|was|were|made|happen))"
+    r"|\bwhich\s+(?:\w+\s+){0,2}?(?:code|functions?|methods?|classes|modules?|files?|places?|parts?|tests?|views?)(?:\s+\w+){0,3}?\s+"
+    r"(?:call|calls|invoke|invokes|use|uses|reference|references|import|imports)\b"
+    r"|\bcall(?:ers?|[- ]sites?)\b|\busages?\b|\b(?:used|called) by\b|\breferences? to\b|\bdependents\b"
+    r"|\bwhere\b(?:[^.?!]|\.(?=\w)){0,60}?\b(?:called|used|invoked|referenced|imported)\b"
+    r"|\b(?:would|will|could|might)\s+(?:\w+\s+){0,3}?(?:break|fail|be affected)\b"
+    r"|\bif\s+(?:i|we|you|someone)\s+(?:change|changed|rename|renamed|remove|removed|delete|deleted|modify|modified)\b"
+    r"|\bimpact of\b|\baffected by\b", re.I)
+# A caller up to this many lines is shown whole; a longer one only around each call.
+CALLER_LINES = 30
+CALL_WINDOW = 3
+# One-line entries per section before the rest are only counted.
+LISTED_LINES = 40
 _TABLES: dict[str, tuple[str, rank.SymbolTable]] = {}
 
 
@@ -421,6 +437,109 @@ def _state_readers(db, files: "_Files", item: dict) -> list[tuple[dict, str]]:
     return found[:2]
 
 
+# `response._handler_class = ...` or `response._resource_closers.append(...)`: state handed to another object.
+HANDS_OVER = re.compile(r"^\s*(?!(?:self|this)\.)([A-Za-z_]\w*)\.(\w+)\s*(?:(?::[^=\n]*)?=(?!=)|\.(?:append|extend|add|update|insert)\()")
+SENDS_SIGNAL = re.compile(r"\b(\w+)\.send(?:_robust)?\(")
+
+
+def _handoff_readers(db, files: "_Files", item: dict, callables: set[str]) -> list[tuple[dict, str]]:
+    """The method of another class that reads what this definition sets on an object it holds,
+    when no other method reads it: `WSGIHandler.__call__` sets `response._handler_class`, and
+    `HttpResponseBase.close`, which the server calls once the response is sent, reads it."""
+    lines = files.get(item["path"])
+    sets: dict[str, tuple[str, int]] = {}
+    for number in range(item["start"] + 1, min(item["end"], len(lines)) + 1):
+        match = HANDS_OVER.match(lines[number - 1])
+        if match and len(match.group(2)) > 3:
+            sets.setdefault(match.group(2), (match.group(1), number))
+    owner = item["name"].rsplit(".", 1)[0] if item["kind"] == "method" else None
+    found = []
+    for name, (holder, number) in sets.items():
+        # A name the project also defines as a method or function (`close`) is read everywhere, and
+        # one many files use (`status_code`) belongs to no single reader.
+        if name in callables:
+            continue
+        paths = [row["path"] for row in db.execute("SELECT path FROM files WHERE instr(content, ?) > 0 LIMIT 21", (f".{name}",))]
+        if len(paths) > 20:
+            continue
+        read = re.compile(rf"\b(?:self|this)\.{re.escape(name)}\b(?!\s*(?::[^=\n]*)?=(?!=))")
+        readers: dict[str, dict] = {}
+        for path in paths:
+            if rank.path_class(path) != "code":
+                continue
+            for n, text in enumerate(files.get(path), 1):
+                if read.search(text):
+                    node = db.execute("SELECT id,path,name,kind,start,end FROM nodes WHERE path=? AND kind='method' AND start<=? AND end>=? ORDER BY end-start LIMIT 1",
+                                      (path, n, n)).fetchone()
+                    if node:
+                        readers.setdefault(node["id"], dict(node))
+        reader = next(iter(readers.values()), None)
+        if len(readers) == 1 and reader["name"].rsplit(".", 1)[0] != owner and reader["end"] - reader["start"] < 30:
+            found.append((reader, f"reads self.{name}, which {item['name']} sets on {holder} at line {number}"))
+    return found[:2]
+
+
+def _project_signals(db) -> set[str]:
+    """Names the project binds to a signal at module level (`request_finished = Signal()`)."""
+    return {match.group(1) for row in db.execute("SELECT content FROM files WHERE instr(content, 'Signal(') > 0")
+            for match in re.finditer(r"(?m)^(\w+)\s*=\s*[\w.]*Signal\(", row[0])}
+
+
+def _signal_receivers(db, files: "_Files", item: dict, signals) -> list[tuple[dict, str]]:
+    """Functions connected to a project signal this definition sends, which run where it is sent:
+    `request_finished.send` in `HttpResponseBase.close` runs `reset_urlconf` and `close_old_connections`.
+    `signals` gives the project's signal names when first asked."""
+    lines = files.get(item["path"])
+    found: list[tuple[dict, str]] = []
+    for number in range(item["start"], min(item["end"], len(lines)) + 1):
+        for name in SENDS_SIGNAL.findall(lines[number - 1]):
+            if name in ("self", "this") or name not in signals() or any(why.startswith(f"runs on {name},") for _, why in found):
+                continue
+            connect = re.compile(rf"\b{re.escape(name)}\.connect\(\s*([\w.]+)|@receiver\([^)]*\b{re.escape(name)}\b")
+            receivers = []
+            for row in db.execute("SELECT path FROM files WHERE instr(content, ?) > 0 ORDER BY path", (name,)):
+                if rank.path_class(row["path"]) != "code":
+                    continue
+                source = files.get(row["path"])
+                for n, text in enumerate(source, 1):
+                    match = connect.search(text)
+                    if not match or text.lstrip().startswith("#"):
+                        continue
+                    if match.group(1):
+                        node = db.execute("SELECT id,path,name,kind,start,end FROM nodes WHERE path=? AND kind='function' AND name=?",
+                                          (row["path"], match.group(1).rsplit(".", 1)[-1])).fetchone()
+                    else:
+                        node = db.execute("SELECT id,path,name,kind,start,end FROM nodes WHERE path=? AND kind='function' AND start>? AND start<=? ORDER BY start LIMIT 1",
+                                          (row["path"], n, n + 4)).fetchone()
+                    if node and node["end"] - node["start"] < 30 and node["id"] not in {r["id"] for r in receivers}:
+                        receivers.append(dict(node))
+            found += [(receiver, f"runs on {name}, which {item['name']} sends at line {number}") for receiver in receivers[:4]]
+    return found
+
+
+RAISES = re.compile(r"\b(?:raise|throw\s+new)\s+([A-Z]\w*)\b")
+
+
+def _raised_subclasses(db, files: "_Files", item: dict, caught_names: set[str]) -> list[tuple[dict, str]]:
+    """Exception classes this definition raises whose project base class the shown code catches
+    (`except`, `isinstance`, `instanceof`): `URLResolver.resolve` raises `Resolver404`, which
+    `response_for_exception` turns into a 404 only because it subclasses `Http404`."""
+    lines = files.get(item["path"])
+    found: list[tuple[dict, str]] = []
+    for number in range(item["start"], min(item["end"], len(lines)) + 1):
+        match = RAISES.search(lines[number - 1])
+        if not match or any(cls["name"] == match.group(1) for cls, _ in found):
+            continue
+        classes = [dict(row) for row in db.execute("SELECT id,path,name,kind,start,end FROM nodes WHERE kind='class' AND name=?", (match.group(1),))]
+        if len(classes) != 1 or rank.path_class(classes[0]["path"]) != "code":
+            continue
+        bases = [row[0] for row in db.execute("SELECT b.name FROM edges e JOIN nodes b ON b.id=e.target WHERE e.source=? AND e.relation='inherits' AND b.kind='class'", (classes[0]["id"],))]
+        caught = [base for base in bases if base.rsplit(".", 1)[-1] in caught_names]
+        if caught:
+            found.append((classes[0], f"raised by {item['name']} at line {number}; a subclass of {', '.join(caught)}"))
+    return found
+
+
 def _computing_constructor(db, files: "_Files", item: dict) -> tuple[dict, str] | None:
     """A short constructor of the method's class that computes an attribute the method reads
     (`ExtendsNode.__init__` collects `self.blocks`, which `ExtendsNode.render` adds to the block
@@ -670,15 +789,233 @@ def _body_matches(db, query: str) -> list[dict]:
         return []
 
 
-def context(project: Project, query: str, budget: int = 3000, session: dict | None = None, cap: int = FIRST_RESPONSE_CAP, focus: bool = False) -> dict:
+def _named_lines(db, files: _Files, name: str, member: bool) -> list[dict]:
+    """Lines of indexed files that name `name` as a whole word, in path and line order, leaving
+    out comments and docstrings. A method is named only after a dot or where it is defined: a
+    parameter or local of the same name (`get_response` in every middleware) is another thing."""
+    word = rf"(?<![\w$]){re.escape(name)}(?![\w$])"
+    pattern = re.compile(rf"\.\s*{word}|\b(?:def|function)\s+{word}|^\s*(?:static\s+|async\s+)*#?{word}\s*\(" if member else word)
+    found = []
+    for row in db.execute("SELECT path FROM files WHERE instr(content, ?) > 0 ORDER BY path", (name,)):
+        lines = files.get(row["path"])
+        docs = [span for span in files.docs.get(row["path"], {}).values()]
+        for number, text in enumerate(lines, 1):
+            if pattern.search(text) and not text.lstrip().startswith(("#", "//", "/*", "*")) and not any(a <= number <= b for a, b in docs):
+                found.append({"path": row["path"], "line": number, "text": text})
+    return found
+
+
+def _line_kind(text: str, leaf: str) -> str:
+    code = text.strip()
+    if re.match(r"(?:from\s+\S+\s+)?import\b", code) or re.search(r"\brequire\(", code):
+        return "imports it"
+    if re.match(rf"(?:async\s+)?(?:def|function|class)\s+{re.escape(leaf)}\b", code):
+        return f"defines another {leaf}"
+    if re.search(rf"\.\s*{re.escape(leaf)}\s*(?::[^=]*)?=(?!=)", code):
+        return f"sets an attribute named {leaf}"
+    if re.search(rf"(?<![\w$]){re.escape(leaf)}\s*\(", code):
+        return f"calls a {leaf}"
+    return f"names {leaf}"
+
+
+def _callers_pack(db, files: _Files, parsed: rank.Query, target: dict, limit: int, session: dict | None, strong: bool, by_identifier: bool) -> dict:
+    """Every place in the project that names the target, for "what calls X" and "what breaks if X changes".
+
+    The definitions that call it are shown around each call, with who calls them in turn; calls
+    whose receiver could not be resolved, other lines that name it (imports, overrides, attribute
+    uses) and the tests follow one line each. Edges record one line per caller, so every call line
+    comes from the text itself, and the verdict counts what was found.
+    """
+    leaf = target["name"].rsplit(".", 1)[-1]
+    session_sent = _session_sent(db, session)
+    around: dict[str, list[dict]] = {}
+
+    def enclosing(path: str, line: int) -> list[dict]:
+        """The definitions around a line, innermost first."""
+        if path not in around:
+            around[path] = [dict(r) for r in db.execute("SELECT id,path,name,kind,start,end FROM nodes WHERE path=? AND kind IN ('function','method','class')", (path,))]
+        return sorted((n for n in around[path] if n["start"] <= line <= n["end"]), key=lambda n: n["end"] - n["start"])
+
+    evidence: dict[str, set[str]] = {}
+    for row in db.execute("SELECT source, relation, evidence FROM edges WHERE target=? AND relation IN ('calls','uses','inherits')", (target["id"],)):
+        evidence.setdefault(row["source"], set()).add("CANDIDATE" if row["evidence"] == "CANDIDATE" else row["relation"])
+    overriding = {item["id"]: why for item, why in _overrides(db, target)}
+    # A call of the method a base class declares runs the target when the target is the one class
+    # that defines it: `self.send` in SessionRedirectMixin runs Session.send. Calls of a base
+    # method with a body of its own may run that body instead, so they are only possible calls.
+    via: dict[str, str] = {}
+    if target["kind"] == "method" and "." in target["name"]:
+        owner_name = target["name"].rsplit(".", 1)[0]
+        for path, name in sorted(_own_classes(db, target) - {(target["path"], owner_name)}):
+            base = db.execute("SELECT id,path,name,kind,start,end FROM nodes WHERE path=? AND name=? AND kind='method'", (path, f"{name}.{leaf}")).fetchone()
+            if not base or rank.path_class(path) != "code":
+                continue
+            base = dict(base)
+            declared = _stub_lines(files.get(path), base) and len(_overrides(db, base)) == 1
+            overriding[base["id"]] = f"declared in {name}; {target['name']} defines it" if declared else f"the {name} method {target['name']} overrides"
+            for row in db.execute("SELECT source, evidence FROM edges WHERE target=? AND relation IN ('calls','uses')", (base["id"],)):
+                evidence.setdefault(row["source"], set()).add("calls" if declared and row["evidence"] != "CANDIDATE" else "CANDIDATE")
+                via.setdefault(row["source"], base["name"])
+    callers: dict[str, dict] = {}
+    possible: list[str] = []
+    others: list[str] = []
+    tests: list[tuple[int, str]] = []
+    in_docs = 0
+    own_kind = 0
+    lineage = _own_classes(db, target)
+    related: dict[tuple[str, str], bool] = {}
+
+    def reaches(cls: dict) -> bool:
+        """`self.<name>` in this class can be the target: the target's class, a base of it, or a subclass."""
+        key = (cls["path"], cls["name"])
+        if key not in related:
+            related[key] = key in lineage or (target["path"], target["name"].rsplit(".", 1)[0]) in _own_classes(db, {"kind": "method", "name": cls["name"] + ".x", "path": cls["path"]})
+        return related[key]
+
+    for hit in _named_lines(db, files, leaf, target["kind"] == "method"):
+        if hit["path"] == target["path"] and target["start"] <= hit["line"] <= target["end"]:
+            continue
+        place = rank.path_class(hit["path"])
+        if place in ("doc", "other"):
+            in_docs += 1
+            continue
+        nest = enclosing(hit["path"], hit["line"])
+        owner = next((n for n in nest if n["kind"] in ("function", "method")), nest[0] if nest else None)
+        kinds = set().union(*(evidence.get(n["id"], set()) for n in nest)) if nest else set()
+        holder = next((n for n in nest if n["kind"] == "class"), None)
+        # `self.get_response` in a class of its own (each middleware, a test case) is that class's own
+        # attribute, even where the index guessed the target from the name alone.
+        defines = re.match(r"\s*(?:async\s+)?(?:def|function)\s", hit["text"])
+        if (target["kind"] == "method" and kinds <= {"CANDIDATE"} and holder and not reaches(holder)
+                and not defines and not re.search(rf"(?<!self)(?<!this)(?<!cls)\.\s*{re.escape(leaf)}(?![\w$])", hit["text"])):
+            own_kind += 1
+            continue
+        # A test's own function of the same name (`def get_response(req)` handed to a middleware) is another thing.
+        if target["kind"] == "method" and kinds <= {"CANDIDATE"} and place != "code" and defines and not (holder and reaches(holder)):
+            own_kind += 1
+            continue
+        where = f"{hit['path']}:{hit['line']}" + (f" {owner['name']}" if owner else "")
+        entry = f"{where}: {hit['text'].strip()[:160]}"
+        if kinds & {"calls", "uses"} and place == "code" and owner:
+            callers.setdefault(owner["id"], {"item": owner, "lines": []})["lines"].append(hit["line"])
+        elif place != "code":
+            # Calls the index resolved come first, then possible ones (`django/test/client.py` is code under a test folder).
+            tests.append((0 if kinds & {"calls", "uses"} else 1 if "CANDIDATE" in kinds else 2, entry))
+        elif "inherits" in kinds:
+            others.append(f"{entry}  [subclass]")
+        elif "CANDIDATE" in kinds:
+            through = next((via[n["id"]] for n in nest if n["id"] in via), None)
+            possible.append(entry + (f"  [through {through}]" if through else ""))
+        else:
+            why = overriding.get(owner["id"]) if owner else None
+            others.append(f"{entry}  [{why or _line_kind(hit['text'], leaf)}]")
+
+    def called_by(item: dict) -> str:
+        names = list(dict.fromkeys(c["name"] for c in _callers(db, item["id"]) if rank.path_class(c["path"]) == "code" and c["id"] != item["id"]))
+        return "; called by " + ", ".join(names[:3]) + (f" and {len(names) - 3} more" if len(names) > 3 else "") if names else ""
+
+    def excerpt(item: dict, lines: list[int]) -> tuple[list[tuple[int, str]], str]:
+        """The whole definition when short, else its first line and the lines around each call."""
+        numbered, complete, note = _render_body(files, item, FULL_BODY)
+        if complete and len(numbered) <= CALLER_LINES:
+            return numbered, note
+        source = files.get(item["path"])
+        keep = {item["start"]} | {n for line in lines for n in range(line - CALL_WINDOW, line + CALL_WINDOW + 1) if item["start"] <= n <= min(item["end"], len(source))}
+        return [(n, source[n - 1]) for n in sorted(keep) if source[n - 1].strip()], f"[Excerpt ends around each call: lines of {item['name']} away from its calls to {leaf} are not shown.]"
+
+    header = f"BALECONTEXT EVIDENCE PACK. Query read as {parsed.describe()}. Showing every place that names {target['name']}."
+    blocks: list[tuple[dict | None, str, bool]] = []
+    if any(a <= target["start"] and target["end"] <= b for a, b in session_sent.get(target["path"], [])):
+        blocks.append((target, f"SOURCE ALREADY SENT IN THIS SESSION: {target['name']} {target['path']}:{target['start']}-{target['end']} id={target['id']}", True))
+    else:
+        numbered, complete, note = _render_body(files, target, LONG_BODY)
+        blocks.append((target, _source_block(target, numbered, "the definition the question asks about", complete, note), complete))
+    order = sorted(callers.values(), key=lambda c: (c["item"]["path"] != target["path"], c["item"]["path"], c["item"]["start"]))
+    for caller in order:
+        item, lines = caller["item"], sorted(set(caller["lines"]))
+        numbered, note = excerpt(item, lines)
+        at = f"line {lines[0]}" if len(lines) == 1 else "lines " + ", ".join(map(str, lines))
+        through = f" through {via[item['id']]}" if item["id"] in via else ""
+        blocks.append((item, _source_block(item, numbered, f"calls {leaf} at {at}{through}{called_by(item)}", True, note), not note.startswith("[Excerpt")))
+    # A larger pack (the hook's extra parts) lists more of each section.
+    room = max(LISTED_LINES, LISTED_LINES * limit // FIRST_RESPONSE_CAP)
+    capped = 0
+    for title, entries in ((f"POSSIBLE CALLS of {leaf} (receiver type not known; one line each)", possible),
+                           (f"OTHER LINES NAMING {leaf} in the code (one line each)", others),
+                           (f"TESTS naming {leaf} (one line each)", [entry for _, entry in sorted(tests, key=lambda t: t[0])])):
+        if entries:
+            capped += max(0, len(entries) - room)
+            more = [f"[and {len(entries) - room} more lines]"] if len(entries) > room else []
+            blocks.append((None, f"=== {title}\n" + "\n".join(entries[:room] + more), True))
+    map_lines = [_map_line(item, "named") for item, _, _ in blocks if item]
+    reserve = min(120 + estimate("\n".join(map_lines[:20])), limit // 4)
+    sections: list[str] = [header, NOTICE]
+    used: list[dict] = []
+    left: list[str] = []
+    cut_short = False
+    sent = {path: list(spans) for path, spans in session_sent.items()}
+    for item, block, whole in blocks:
+        if left or estimate("\n\n".join(sections + [block])) > limit - reserve:
+            if not used and item is target and block.startswith("SOURCE {"):
+                # The definition itself always leads, cut to what fits.
+                lines = block.split("\n")
+                while len(lines) > 2 and estimate("\n\n".join(sections + ["\n".join(lines)])) > limit - reserve:
+                    lines = lines[:-1]
+                block, whole, cut_short = "\n".join(lines), False, True
+            else:
+                left.append(item["name"] if item else block.split("\n", 1)[0].removeprefix("=== ").split(" (")[0])
+                continue
+        sections.append(block)
+        if item:
+            used.append({k: item[k] for k in ("id", "path", "name", "start", "end")})
+            if whole and block.startswith("SOURCE {"):
+                sent.setdefault(item["path"], []).append([item["start"], item["end"]])
+    if session is not None:
+        session["sent"] = sent
+        _remember_hashes(db, session)
+
+    def count(n: int, what: str) -> str:
+        return f"{n} {what}{'s' if n != 1 else ''}"
+
+    sites = sum(len(set(c["lines"])) for c in callers.values())
+    found = [f"{count(len(callers), 'definition')} in the code call{'s' if len(callers) == 1 else ''} it ({count(sites, 'call line')})" if callers
+             else f"no definition in the code calls {leaf} by name"]
+    found += [f"{len(possible)} more may call it (receiver type not known)"] if possible else []
+    found += [f"{count(len(others), 'other line')} in the code name{'s' if len(others) == 1 else ''} it"] if others else []
+    found += [f"{count(len(tests), 'line')} in tests"] if tests else []
+    found += [f"{count(own_kind, 'line')} name{'s' if own_kind == 1 else ''} another class's or test's own {leaf} (not listed)"] if own_kind else []
+    found += [f"{count(in_docs, 'line')} in docs (not listed)"] if in_docs else []
+    caveat = f"A call made through another name (an alias, a value passed as a callback, getattr) shows only where {leaf} itself is written."
+    if left or capped or cut_short:
+        verdict = "PARTIAL"
+        gaps = ([f"not included: {', '.join(left[:8])}" + (f" and {len(left) - 8} more" if len(left) > 8 else "")] if left else []) \
+            + ([f"{capped} lines only counted"] if capped else []) + (["cut short: " + target["name"]] if cut_short else [])
+        coverage = f"COVERAGE: PARTIAL ({'; '.join(gaps)}). Found: {'; '.join(found)}. {caveat} Fetch listed ids with balecontext_expand, or read the specific lines."
+    else:
+        verdict = "COMPLETE"
+        coverage = f"COVERAGE: COMPLETE. Every line in the project that names {leaf} is shown or listed above: {'; '.join(found)}. {caveat}"
+    tail = ["MAP (shown above, related, or available by id):\n" + "\n".join(map_lines[:20])] if map_lines else []
+    text = "\n\n".join(sections + tail + [coverage])
+    baseline = sum(len(row[0].encode("utf-8")) for row in db.execute("SELECT content FROM files"))
+    shown = [u["id"] for u in used]
+    return {"text": text, "sources": used, "map": [u | {"role": "named"} for u in used], "chain": shown, "deep": {}, "helpers": [], "not_included": [],
+            "followup": False, "edges": [], "verdict": verdict, "kind": "callers", "coverage": coverage, "strong": strong, "entry_identifier": by_identifier,
+            "estimated_tokens": estimate(text), "budget": limit, "token_method": "ceil(UTF-8 bytes / 4); estimate only",
+            "eligible_corpus_estimated_tokens": math.ceil(baseline / 4), "measurement_note": "Context size only. This is not total model-token savings or subscription usage."}
+
+
+def context(project: Project, query: str, budget: int = 3000, session: dict | None = None, cap: int = FIRST_RESPONSE_CAP, focus: bool = False,
+            refresh: bool = True) -> dict:
     """Build an evidence pack: a map, the entry point and its callees in call order, and a coverage verdict.
 
     With `focus`, a follow-up whose entry point was already sent in the session shows only new
     definitions the question names or the entry calls directly; the rest are listed, not shown.
+    Without `refresh`, the index is used as it is (the caller refreshed it a moment ago).
     """
     validate_budget(budget, cap)
     terms(query)
-    project.index()
+    if refresh:
+        project.index()
     limit = min(budget, cap)
     with project.connect(snapshot=True) as db:
         table = _symbol_table(project, db)
@@ -686,8 +1023,19 @@ def context(project: Project, query: str, budget: int = 3000, session: dict | No
         body = _body_matches(db, query)
         body_scores = {row["id"]: 40.0 * (1 - index / max(1, len(body))) for index, row in enumerate(body) if row["kind"] not in {"file", "chunk"}}
         ranked = rank.score(table, parsed, body_scores)
-        seeds = _call_root(db, rank.pick_seeds(parsed, ranked), ranked)
+        picked = rank.pick_seeds(parsed, ranked)
         files = _Files(db)
+        # The definition a callers question names leads as it is, not the outermost of its callers.
+        named = next((seed for seed in picked if seed[2]), picked[0] if picked else None)
+        if named and named[1].kind in ("function", "method", "class") and CALLERS_QUESTION.search(query):
+            lead = named[1]
+            strong = bool(named[2] or set(parsed.words) & lead.leaf_tokens or set(parsed.words) & lead.name_tokens)
+            # A plain word names the definition where the question writes it as a name: "who calls compose", "`compose`", "compose()".
+            leaf = re.escape(lead.name.rsplit(".", 1)[-1])
+            written = re.search(rf"`{leaf}`|(?<![\w.]){leaf}\s*\(|\b(?:calls?|invokes?|uses?|references?|imports?|chang(?:e|ed|ing)|renam(?:e|ed|ing)|remov(?:e|ed|ing)"
+                                rf"|modif(?:y|ied|ying))\s+{leaf}\b|\bwhere\s+(?:is|are)\s+{leaf}\b", query)
+            return _callers_pack(db, files, parsed, {k: getattr(lead, k) for k in ("id", "path", "name", "kind", "start", "end")}, limit, session, strong, bool(named[2] or written))
+        seeds = _call_root(db, picked, ranked)
         # Planned order: each seed followed by what it calls, in the order it calls them.
         planned: list[tuple[dict, str]] = []
         planned_ids: set[str] = set()
@@ -915,13 +1263,15 @@ def context(project: Project, query: str, budget: int = 3000, session: dict | No
         # What the question's own methods depend on in their class: the constructor that computes
         # what they read, and the methods that read what they set. After everything the chain calls.
         dependants: list[tuple[dict, str]] = []
+        callables: set[str] = set()
         for item, role in planned:
             extended.append((item, role))
             if item["kind"] not in ("method", "function"):
                 continue
             if item["kind"] == "method" and item["id"] in seed_ids:
                 constructor = _computing_constructor(db, files, item)
-                dependants += ([constructor] if constructor else []) + _state_readers(db, files, item)
+                callables = callables or {entry.name.rsplit(".", 1)[-1] for entry in table.entries if entry.kind in ("method", "function")}
+                dependants += ([constructor] if constructor else []) + _state_readers(db, files, item) + _handoff_readers(db, files, item, callables)
             if templates_asked:
                 add_templates([(n, f"named by {item['name']}") for n in TEMPLATE_FILE.findall("\n".join(files.get(item["path"])[item["start"] - 1:item["end"]]))])
             stubs = [item] if "." in item["name"] and _abstract_lines(files.get(item["path"]), item) else []
@@ -946,8 +1296,36 @@ def context(project: Project, query: str, budget: int = 3000, session: dict | No
                     add(method, f"implements {stub['name']} for {', '.join(classes[:3])}" + (f"; also implemented by {', '.join(others)}" if others else ""))
                     if templates_asked and used:
                         add_templates([(attributes[name], f"in {owner['name']}.{name}") for name in used if TEMPLATE_FILE.fullmatch(f'"{attributes[name]}"')], method["path"])
+        start = len(extended)
         for method, why in dependants:
             add(method, why)
+        # Then the functions a signal sent on the question's path runs, and the exceptions raised on
+        # it that the shown code catches through their base class.
+        on_path = [item for item, _ in planned if (item["id"] in chain_path or item["id"] in seed_ids) and item["kind"] in ("method", "function")]
+        receivers: dict[str, tuple[dict, list[str]]] = {}
+        signals: list[set[str]] = []
+
+        def project_signals() -> set[str]:
+            if not signals:
+                signals.append(_project_signals(db))
+            return signals[0]
+
+        for item in on_path + [method for method, _ in dependants]:
+            for receiver, why in _signal_receivers(db, files, item, project_signals):
+                receivers.setdefault(receiver["id"], (receiver, []))[1].append(why)
+        for receiver, whys in list(receivers.values())[:6]:
+            add(receiver, "; ".join(whys))
+        handled = "\n".join("\n".join(files.get(item["path"])[item["start"] - 1:item["end"]]) for item in shown_code)
+        caught_names = {name for clause in re.findall(r"\bexcept\b([^:\n]*)|\bisinstance\(([^)\n]*)|\binstanceof\s+([\w.]+)", handled)
+                        for part in clause for name in re.findall(r"\w+", part)}
+        for cls, why in [pair for item in shown_code for pair in _raised_subclasses(db, files, item, caught_names)][:3]:
+            add(cls, why)
+        # All of these go ahead of the deep helpers, which the hook lists by name only.
+        moved = extended[start:]
+        del extended[start:]
+        deep_ids = {item["id"] for item, _ in deep}
+        cut = next((index for index, (item, _) in enumerate(extended) if item["id"] in deep_ids), len(extended))
+        extended[cut:cut] = moved
         planned = extended
         map_lines =[_map_line(item, role) for item, role in planned + related_items]
         # The hook drops the map, so a focused pack keeps room only for the verdict lines.
