@@ -18,9 +18,11 @@ Created by **Muhammad Baleegh**. This is an original implementation, inspired by
 the general idea of graph-assisted code navigation. It is not affiliated with Graphify.
 
 **Status: v0.1.0 alpha.** Core CLI and MCP protocol tests are automated. Live
-integration tests in individual agent applications and real-world agent token
-benchmarks are still pending. The 90–95% total-token reduction is a research
-target, not a measured result or guarantee.
+integration tests in individual agent applications are still pending. Early
+paired Claude Code tests on explanation questions measured 62–79% fewer total
+tokens per conversation, with smaller cost savings; see
+[the evidence](docs/benchmarks.md). The 90–95% total-token reduction is a
+research target, not a measured result or guarantee.
 
 The source checkout now also includes automatic background refresh and stricter
 benchmark quality checks. These changes are **unreleased**; the v0.1.0 download
@@ -216,7 +218,8 @@ It is not a model-specific token count, a hard provider-token cap, or an allowan
 meter. MCP schemas, envelopes, instructions, reasoning, outputs and additional
 tool calls also consume tokens.
 
-There is no measured end-to-end savings claim yet. See [the benchmark protocol](benchmarks/README.md)
+Every paired Claude Code test run so far, including weak and negative results,
+is on [the evidence page](docs/benchmarks.md). See [the benchmark protocol](benchmarks/README.md)
 and the comparison script for provider-reported token totals, setup overhead,
 retries and outcome checks. We will publish actual results rather than infer
 total savings from a smaller context window.
