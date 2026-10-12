@@ -565,7 +565,7 @@ class ResolveTest(unittest.TestCase):
         self.assertIn('"role": "calls go at line 32"', text)
         self.assertIn("32:     result = runner.go()", text)
         self.assertNotIn("total_10 = len(items) + 10", text)
-        self.assertIn("[Excerpt ends around each call: lines of long_job away from its calls to go are not shown.]", text)
+        self.assertIn("[Excerpt: lines of long_job away from its calls to go, and from what it does with their result, are not shown.]", text)
         self.assertIn("=== POSSIBLE CALLS of go (receiver type not known; one line each)\nrunner.py:7 drive: return task.go()", text)
         self.assertEqual(response["verdict"], "COMPLETE")
 
@@ -609,6 +609,78 @@ class ResolveTest(unittest.TestCase):
         for question in ("What calls does Session.send make?", "How does Session.send work?", "Trace how Django handles a request",
                          "What does resolve_redirects call?"):
             self.assertFalse(CALLERS_QUESTION.search(question), question)
+
+    def test_a_long_caller_shows_what_it_does_with_the_result(self):
+        temporary = tempfile.TemporaryDirectory(prefix="balecontext-result-")
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        handle = ("def handle(environ):\n    handler = Handler()\n" + "".join(f"    step_{i} = {i}\n" for i in range(20))
+                  + "    response = handler.get_response(environ)\n    log(response.status_code)\n" + "".join(f"    step_{i} += 1\n" for i in range(8))
+                  + "    response.close()\n    return response\n")
+        (root / "handlers.py").write_text("class Handler:\n    def get_response(self, environ):\n        return Response(environ)\n\n\n" + handle, encoding="utf-8")
+        response = context(Project(root), "What would break if I changed what Handler.get_response returns?")
+        text = response["text"]
+        self.assertIn("28:     response = handler.get_response(environ)", text)
+        # The lines soon after the call that use its result are shown; the rest of the long caller is not.
+        self.assertIn("38:     response.close()", text)
+        self.assertIn("39:     return response", text)
+        self.assertNotIn("step_5 += 1", text)
+        self.assertNotIn("step_10 = 10", text)
+
+    def test_the_async_counterpart_of_a_method_is_covered_by_a_callers_question(self):
+        temporary = tempfile.TemporaryDirectory(prefix="balecontext-twin-")
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        (root / "handlers.py").write_text(
+            "class Handler:\n    def get_response(self, request):\n        return self.chain(request)\n\n"
+            "    async def get_response_async(self, request):\n        return await self.chain(request)\n\n\n"
+            "class WSGIHandler(Handler):\n    def __call__(self, environ):\n        return self.get_response(environ)\n\n\n"
+            "class ASGIHandler(Handler):\n    async def run(self, scope):\n        response = await self.get_response_async(scope)\n        return response\n",
+            encoding="utf-8")
+        response = context(Project(root), "What would break if I changed what Handler.get_response returns?")
+        text = response["text"]
+        self.assertIn('"name": "Handler.get_response_async", "kind": "method", "role": "counterpart of get_response in Handler (the same method for the other of sync and async)"', text)
+        self.assertIn("=== LINES NAMING get_response_async, the counterpart of get_response (one line each)\n"
+                      "handlers.py:16 ASGIHandler.run: response = await self.get_response_async(scope)", text)
+        self.assertIn("1 line names its counterpart get_response_async", text)
+        self.assertEqual(response["verdict"], "COMPLETE")
+
+    def test_a_library_test_client_counts_as_code_a_change_would_break(self):
+        temporary = tempfile.TemporaryDirectory(prefix="balecontext-support-")
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        (root / "pkg" / "test").mkdir(parents=True)
+        (root / "tests").mkdir()
+        (root / "pkg" / "__init__.py").write_text("", encoding="utf-8")
+        (root / "pkg" / "handlers.py").write_text("class Handler:\n    def get_response(self, request):\n        return request\n", encoding="utf-8")
+        (root / "pkg" / "test" / "client.py").write_text(
+            "from pkg.handlers import Handler\n\n\nclass ClientHandler(Handler):\n    def __call__(self, environ):\n"
+            "        response = self.get_response(environ)\n        response.wsgi_request = environ\n        return response\n", encoding="utf-8")
+        (root / "tests" / "test_client.py").write_text(
+            "from pkg.handlers import Handler\n\n\ndef test_get_response():\n    assert Handler().get_response(1) == 1\n", encoding="utf-8")
+        response = context(Project(root), "Who calls Handler.get_response?")
+        text = response["text"]
+        # The test client ships with the library, so it is shown as a caller; the test tree stays one line each.
+        self.assertIn('"path": "pkg/test/client.py", "lines": [5, 8], "name": "ClientHandler.__call__", "kind": "method", "role": "calls get_response at line 6"', text)
+        self.assertIn("=== TESTS naming get_response (one line each)\ntests/test_client.py:5 test_get_response:", text)
+        self.assertIn("1 definition in the code calls it (1 call line)", text)
+
+    def test_a_constructor_that_runs_a_shown_method_is_sent_with_the_entry(self):
+        temporary = tempfile.TemporaryDirectory(prefix="balecontext-running-")
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        (root / "handlers.py").write_text(
+            "class BaseHandler:\n    def load_middleware(self):\n        chain = self._get_response\n        for layer in reversed(self.layers):\n"
+            "            chain = layer(chain)\n        self._middleware_chain = chain\n\n"
+            "    def get_response(self, request):\n        return self._middleware_chain(request)\n\n"
+            "    def _get_response(self, request):\n        return request.view(request)\n\n\n"
+            "class WSGIHandler(BaseHandler):\n    request_class = dict\n\n    def __init__(self, layers):\n        super().__init__()\n"
+            "        self.layers = layers\n        self.load_middleware()\n\n"
+            "    def __call__(self, environ):\n        request = self.request_class(environ)\n        return self.get_response(request)\n", encoding="utf-8")
+        response = context(Project(root), "Trace how WSGIHandler.__call__ handles a request", budget=6000)
+        text = response["text"]
+        self.assertIn("BaseHandler.load_middleware", text)
+        self.assertIn('"name": "WSGIHandler.__init__", "kind": "method", "role": "constructor of WSGIHandler; calls load_middleware when the object is made"', text)
 
     def test_tags_the_question_names_lead_and_calls_resolve_near_the_caller(self):
         temporary = tempfile.TemporaryDirectory(prefix="balecontext-tags-")

@@ -215,6 +215,16 @@
   pack it got before missed `merge_environment_settings` yet said COMPLETE. None of the 48 existing
   benchmark and conversation questions reads as a callers question. New paired-test conversations
   `requests-callers` and `django-callers` measure this kind of task.
+- What the paired `django-callers` and hard Django runs found missing: a long caller shown around
+  a call now also shows the lines soon after it that use the call's result (`response =
+  self.get_response(request)`, then `response.close()`), which is what a change to the result would
+  break; the sync or async counterpart of the method asked about (`get_response_async` beside
+  `get_response`) is shown with the lines that name it; library code in a `test` package of the
+  project (`django/test/client.py`, the test client) counts as code that calls the definition, not
+  as a test line; and a short constructor that runs a method the pack shows (`WSGIHandler.__init__`
+  calls `load_middleware`) is sent with the entry. Django's `get_response` question grows from
+  3,813 to 5,680 characters, the hard Django conversation by 190 characters; the requests
+  conversations and the offline benchmark are unchanged.
 - `benchmarks/claude_pair.py` writes `share.md` itself at the end of a test.
 - `benchmarks/share_results.py` bundles one paired test (summary, per-question figures,
   per-call usage, tool calls and answers) into a single `share.md`.

@@ -110,9 +110,11 @@ CALLERS_QUESTION = re.compile(
     r"|\b(?:would|will|could|might)\s+(?:\w+\s+){0,3}?(?:break|fail|be affected)\b"
     r"|\bif\s+(?:i|we|you|someone)\s+(?:change|changed|rename|renamed|remove|removed|delete|deleted|modify|modified)\b"
     r"|\bimpact of\b|\baffected by\b", re.I)
-# A caller up to this many lines is shown whole; a longer one only around each call.
+# A caller up to this many lines is shown whole; a longer one only around each call, plus the
+# lines soon after that use what the call returned.
 CALLER_LINES = 30
 CALL_WINDOW = 3
+RESULT_WINDOW = 12
 # One-line entries per section before the rest are only counted.
 LISTED_LINES = 40
 _TABLES: dict[str, tuple[str, rank.SymbolTable]] = {}
@@ -556,6 +558,35 @@ def _computing_constructor(db, files: "_Files", item: dict) -> tuple[dict, str] 
     return init, f"constructor of {item['name'].rsplit('.', 1)[0]}; sets {', '.join(dict.fromkeys(computed))}, read by {item['name']}"
 
 
+def _running_constructor(db, files: "_Files", item: dict, shown: set[str]) -> tuple[dict, str] | None:
+    """A short constructor of the method's class that runs a method the pack shows (`WSGIHandler.__init__`
+    calls `load_middleware`, which builds the chain `__call__` later runs)."""
+    init = next((m for m in _own_methods(db, item) if m["name"].endswith((".__init__", ".constructor"))), None)
+    if not init or init["end"] - init["start"] >= 15:
+        return None
+    body = "\n".join(files.get(item["path"])[init["start"] - 1:init["end"]])
+    called = [name for name in dict.fromkeys(re.findall(r"\b(?:self|this)\.(\w+)\s*\(", body)) if name in shown]
+    if not called:
+        return None
+    return init, f"constructor of {item['name'].rsplit('.', 1)[0]}; calls {', '.join(called)} when the object is made"
+
+
+def _counterpart(db, target: dict) -> dict | None:
+    """The sync or async twin of a method in its class: `get_response_async` beside `get_response`,
+    `readFileSync` beside `readFile`."""
+    if target["kind"] != "method" or "." not in target["name"]:
+        return None
+    owner, leaf = target["name"].rsplit(".", 1)
+    names = [f"{leaf}_async", f"async_{leaf}", f"{leaf}Async", f"{leaf}Sync"]
+    names += [leaf[:-len(affix)] for affix in ("_async", "Async", "Sync") if leaf.endswith(affix) and len(leaf) > len(affix)]
+    names += [leaf[len("async_"):]] if leaf.startswith("async_") else []
+    for name in names:
+        row = db.execute("SELECT id,path,name,kind,start,end FROM nodes WHERE path=? AND name=? AND kind='method'", (target["path"], f"{owner}.{name}")).fetchone()
+        if row:
+            return dict(row)
+    return None
+
+
 def _callable_class(db, table, words: set[str], planned_ids: set[str]) -> tuple[dict, str] | None:
     """The `__call__` of the one project base class a question word begins (`MiddlewareMixin`, base
     of 19 middleware classes, for "the middleware chain"): what each object in such a chain runs
@@ -805,6 +836,16 @@ def _named_lines(db, files: _Files, name: str, member: bool) -> list[dict]:
     return found
 
 
+def _support_code(path: str) -> bool:
+    """Library code that lives in a `test` package of the project (`django/test/client.py`) rather
+    than in a test tree or a test module."""
+    parts = PurePosixPath(path.lower()).parts
+    trees = {"tests", "test", "testing", "__tests__", "spec", "specs"}
+    return (len(parts) > 2 and parts[0] not in trees and bool({"test", "testing"} & set(parts[1:-1]))
+            and not {"tests", "__tests__", "spec", "specs"} & set(parts[:-1])
+            and not re.match(r"test_|tests?\.|conftest\.|.*(?:_test|_tests|\.test|\.spec)\.\w+$", parts[-1]))
+
+
 def _line_kind(text: str, leaf: str) -> str:
     code = text.strip()
     if re.match(r"(?:from\s+\S+\s+)?import\b", code) or re.search(r"\brequire\(", code):
@@ -864,6 +905,7 @@ def _callers_pack(db, files: _Files, parsed: rank.Query, target: dict, limit: in
     own_kind = 0
     lineage = _own_classes(db, target)
     related: dict[tuple[str, str], bool] = {}
+    twin = _counterpart(db, target)
 
     def reaches(cls: dict) -> bool:
         """`self.<name>` in this class can be the target: the target's class, a base of it, or a subclass."""
@@ -896,10 +938,12 @@ def _callers_pack(db, files: _Files, parsed: rank.Query, target: dict, limit: in
             continue
         where = f"{hit['path']}:{hit['line']}" + (f" {owner['name']}" if owner else "")
         entry = f"{where}: {hit['text'].strip()[:160]}"
-        if kinds & {"calls", "uses"} and place == "code" and owner:
+        # Library code in a `test` package (`django/test/client.py`, the test client) breaks like any other code.
+        code_like = place == "code" or (place == "test" and _support_code(hit["path"]))
+        if kinds & {"calls", "uses"} and code_like and owner:
             callers.setdefault(owner["id"], {"item": owner, "lines": []})["lines"].append(hit["line"])
-        elif place != "code":
-            # Calls the index resolved come first, then possible ones (`django/test/client.py` is code under a test folder).
+        elif not code_like:
+            # Calls the index resolved come first, then possible ones.
             tests.append((0 if kinds & {"calls", "uses"} else 1 if "CANDIDATE" in kinds else 2, entry))
         elif "inherits" in kinds:
             others.append(f"{entry}  [subclass]")
@@ -920,8 +964,18 @@ def _callers_pack(db, files: _Files, parsed: rank.Query, target: dict, limit: in
         if complete and len(numbered) <= CALLER_LINES:
             return numbered, note
         source = files.get(item["path"])
-        keep = {item["start"]} | {n for line in lines for n in range(line - CALL_WINDOW, line + CALL_WINDOW + 1) if item["start"] <= n <= min(item["end"], len(source))}
-        return [(n, source[n - 1]) for n in sorted(keep) if source[n - 1].strip()], f"[Excerpt ends around each call: lines of {item['name']} away from its calls to {leaf} are not shown.]"
+        last = min(item["end"], len(source))
+        keep = {item["start"]}
+        for line in lines:
+            keep |= {n for n in range(line - CALL_WINDOW, line + CALL_WINDOW + 1) if item["start"] <= n <= last}
+            # What the caller goes on to do with the result (`response = self.get_response(request)`,
+            # then `response.close()`) is what a change to the result would break.
+            result = re.match(r"\s*(?:(?:const|let|var)\s+)?([A-Za-z_$][\w$]*)\s*(?::[^=\n]*)?=(?!=)", source[line - 1])
+            if result:
+                uses = re.compile(rf"(?<![\w$]){re.escape(result.group(1))}(?![\w$])")
+                keep |= {n for n in range(line + CALL_WINDOW + 1, line + RESULT_WINDOW + 1) if n <= last and uses.search(source[n - 1])}
+        return [(n, source[n - 1]) for n in sorted(keep) if source[n - 1].strip()], \
+            f"[Excerpt: lines of {item['name']} away from its calls to {leaf}, and from what it does with their result, are not shown.]"
 
     header = f"BALECONTEXT EVIDENCE PACK. Query read as {parsed.describe()}. Showing every place that names {target['name']}."
     blocks: list[tuple[dict | None, str, bool]] = []
@@ -937,11 +991,25 @@ def _callers_pack(db, files: _Files, parsed: rank.Query, target: dict, limit: in
         at = f"line {lines[0]}" if len(lines) == 1 else "lines " + ", ".join(map(str, lines))
         through = f" through {via[item['id']]}" if item["id"] in via else ""
         blocks.append((item, _source_block(item, numbered, f"calls {leaf} at {at}{through}{called_by(item)}", True, note), not note.startswith("[Excerpt")))
+    # The sync or async counterpart of the method (`get_response_async` beside `get_response`) is
+    # the same contract for the other kind of caller, so it is shown and its callers are listed.
+    twin_lines: list[str] = []
+    twin_leaf = twin["name"].rsplit(".", 1)[-1] if twin else ""
+    if twin:
+        numbered, complete, note = _render_body(files, twin, LONG_BODY)
+        blocks.append((twin, _source_block(twin, numbered, f"counterpart of {leaf} in {twin['name'].rsplit('.', 1)[0]} (the same method for the other of sync and async)", complete, note), complete))
+        for hit in _named_lines(db, files, twin_leaf, True):
+            if hit["path"] == twin["path"] and twin["start"] <= hit["line"] <= twin["end"] or rank.path_class(hit["path"]) in ("doc", "other"):
+                continue
+            nest = enclosing(hit["path"], hit["line"])
+            owner = next((n for n in nest if n["kind"] in ("function", "method")), nest[0] if nest else None)
+            twin_lines.append(f"{hit['path']}:{hit['line']}" + (f" {owner['name']}" if owner else "") + f": {hit['text'].strip()[:160]}")
     # A larger pack (the hook's extra parts) lists more of each section.
     room = max(LISTED_LINES, LISTED_LINES * limit // FIRST_RESPONSE_CAP)
     capped = 0
     for title, entries in ((f"POSSIBLE CALLS of {leaf} (receiver type not known; one line each)", possible),
                            (f"OTHER LINES NAMING {leaf} in the code (one line each)", others),
+                           (f"LINES NAMING {twin_leaf}, the counterpart of {leaf} (one line each)", twin_lines),
                            (f"TESTS naming {leaf} (one line each)", [entry for _, entry in sorted(tests, key=lambda t: t[0])])):
         if entries:
             capped += max(0, len(entries) - room)
@@ -983,6 +1051,7 @@ def _callers_pack(db, files: _Files, parsed: rank.Query, target: dict, limit: in
     found += [f"{len(possible)} more may call it (receiver type not known)"] if possible else []
     found += [f"{count(len(others), 'other line')} in the code name{'s' if len(others) == 1 else ''} it"] if others else []
     found += [f"{count(len(tests), 'line')} in tests"] if tests else []
+    found += [f"{count(len(twin_lines), 'line')} name{'s' if len(twin_lines) == 1 else ''} its counterpart {twin_leaf}"] if twin_lines else []
     found += [f"{count(own_kind, 'line')} name{'s' if own_kind == 1 else ''} another class's or test's own {leaf} (not listed)"] if own_kind else []
     found += [f"{count(in_docs, 'line')} in docs (not listed)"] if in_docs else []
     caveat = f"A call made through another name (an alias, a value passed as a callback, getattr) shows only where {leaf} itself is written."
@@ -1269,7 +1338,8 @@ def context(project: Project, query: str, budget: int = 3000, session: dict | No
             if item["kind"] not in ("method", "function"):
                 continue
             if item["kind"] == "method" and item["id"] in seed_ids:
-                constructor = _computing_constructor(db, files, item)
+                constructor = _computing_constructor(db, files, item) or _running_constructor(
+                    db, files, item, {i["name"].rsplit(".", 1)[-1] for i, _ in planned if i["kind"] == "method" and i["id"] != item["id"]})
                 callables = callables or {entry.name.rsplit(".", 1)[-1] for entry in table.entries if entry.kind in ("method", "function")}
                 dependants += ([constructor] if constructor else []) + _state_readers(db, files, item) + _handoff_readers(db, files, item, callables)
             if templates_asked:
