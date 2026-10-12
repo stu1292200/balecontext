@@ -232,6 +232,13 @@
   Windows PC against 2 to 5 here. `balecontext install --hook` raises the limit in an existing
   settings file. Each line of `.balecontext/hook-log.jsonl` now also records how long the hook took
   and how much of that was refreshing the index, so a slow machine can be understood from its log.
+- A callers pack shows up to ten documentation lines that name the definition, one each
+  (a release note can say what a change breaks for users); more are counted. Documents are
+  read as prose, so a `*` bullet or `#` heading line is kept, and a docs chapter about testing
+  (`docs/topics/testing/tools.txt`) counts as documentation, not as a test.
+- `benchmarks/wire_log.py` records every request Claude Code sends to the model, with the
+  usage the model reported, by standing in for ANTHROPIC_BASE_URL; `benchmarks/wire_report.py`
+  shows where each request stops matching the one before it, as the prompt cache sees it.
 - The hook ranks a prompt once: body matches, the ranking and each file's lines and docstring
   ranges are kept for the process, so packing the prompt at several budgets and building the
   extra parts no longer repeat them. The packs are the same; the hook takes about 40% less time

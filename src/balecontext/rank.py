@@ -75,7 +75,11 @@ def path_class(path: str) -> str:
     pure = PurePosixPath(path.lower())
     parts = set(pure.parts[:-1])
     name = pure.name
-    if parts & {"tests", "test", "testing", "__tests__", "spec", "specs"} or name.startswith("test_") or re.search(r"(_test|_tests|\.test|\.spec)\.[a-z]+$", name):
+    # A docs chapter about testing (`docs/topics/testing/tools.txt`) is documentation; a test
+    # directory's own docs are tests' material. The outer directory decides.
+    doc_at = next((i for i, part in enumerate(pure.parts[:-1]) if part in {"docs", "doc"}), None)
+    test_at = next((i for i, part in enumerate(pure.parts[:-1]) if part in {"tests", "test", "testing", "__tests__", "spec", "specs"}), None)
+    if (test_at is not None and (doc_at is None or test_at < doc_at)) or name.startswith("test_") or re.search(r"(_test|_tests|\.test|\.spec)\.[a-z]+$", name):
         return "test"
     if parts & {"examples", "example", "samples", "sample"}:
         return "example"

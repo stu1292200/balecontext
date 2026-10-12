@@ -117,6 +117,8 @@ CALL_WINDOW = 3
 RESULT_WINDOW = 12
 # One-line entries per section before the rest are only counted.
 LISTED_LINES = 40
+# Doc lines naming a definition shown one each in a callers pack.
+DOC_LINES = 10
 _TABLES: dict[str, tuple[str, rank.SymbolTable]] = {}
 _RANKED: dict[tuple[str, str, str], tuple[list[dict], list]] = {}
 
@@ -858,8 +860,10 @@ def _named_lines(db, files: _Files, name: str, member: bool) -> list[dict]:
     for row in db.execute("SELECT path FROM files WHERE instr(content, ?) > 0 ORDER BY path", (name,)):
         lines = files.get(row["path"])
         docs = [span for span in files.docs.get(row["path"], {}).values()]
+        # In a document, `*` starts a bullet and `#` a heading, not a comment.
+        prose = rank.path_class(row["path"]) in ("doc", "other")
         for number, text in enumerate(lines, 1):
-            if pattern.search(text) and not text.lstrip().startswith(("#", "//", "/*", "*")) and not any(a <= number <= b for a, b in docs):
+            if pattern.search(text) and (prose or not text.lstrip().startswith(("#", "//", "/*", "*"))) and not any(a <= number <= b for a, b in docs):
                 found.append({"path": row["path"], "line": number, "text": text})
     return found
 
@@ -929,7 +933,7 @@ def _callers_pack(db, files: _Files, parsed: rank.Query, target: dict, limit: in
     possible: list[str] = []
     others: list[str] = []
     tests: list[tuple[int, str]] = []
-    in_docs = 0
+    docs: list[str] = []
     own_kind = 0
     lineage = _own_classes(db, target)
     related: dict[tuple[str, str], bool] = {}
@@ -947,7 +951,7 @@ def _callers_pack(db, files: _Files, parsed: rank.Query, target: dict, limit: in
             continue
         place = rank.path_class(hit["path"])
         if place in ("doc", "other"):
-            in_docs += 1
+            docs.append(f"{hit['path']}:{hit['line']}: {hit['text'].strip()[:160]}")
             continue
         nest = enclosing(hit["path"], hit["line"])
         owner = next((n for n in nest if n["kind"] in ("function", "method")), nest[0] if nest else None)
@@ -1038,11 +1042,16 @@ def _callers_pack(db, files: _Files, parsed: rank.Query, target: dict, limit: in
     for title, entries in ((f"POSSIBLE CALLS of {leaf} (receiver type not known; one line each)", possible),
                            (f"OTHER LINES NAMING {leaf} in the code (one line each)", others),
                            (f"LINES NAMING {twin_leaf}, the counterpart of {leaf} (one line each)", twin_lines),
-                           (f"TESTS naming {leaf} (one line each)", [entry for _, entry in sorted(tests, key=lambda t: t[0])])):
+                           (f"TESTS naming {leaf} (one line each)", [entry for _, entry in sorted(tests, key=lambda t: t[0])]),
+                           (f"DOCS naming {leaf} (one line each)", docs)):
         if entries:
-            capped += max(0, len(entries) - room)
-            more = [f"[and {len(entries) - room} more lines]"] if len(entries) > room else []
-            blocks.append((None, f"=== {title}\n" + "\n".join(entries[:room] + more), True))
+            # A release note or a guide can say what a change to the definition breaks for users
+            # ("manually built WSGIRequest objects must be given a file-like wsgi.input"), so a
+            # few doc lines are shown; many are only counted and do not make the pack partial.
+            shown = min(room, DOC_LINES) if entries is docs else room
+            capped += max(0, len(entries) - shown) if entries is not docs else 0
+            more = [f"[and {len(entries) - shown} more lines]"] if len(entries) > shown else []
+            blocks.append((None, f"=== {title}\n" + "\n".join(entries[:shown] + more), True))
     map_lines = [_map_line(item, "named") for item, _, _ in blocks if item]
     reserve = min(120 + estimate("\n".join(map_lines[:20])), limit // 4)
     sections: list[str] = [header, NOTICE]
@@ -1081,7 +1090,7 @@ def _callers_pack(db, files: _Files, parsed: rank.Query, target: dict, limit: in
     found += [f"{count(len(tests), 'line')} in tests"] if tests else []
     found += [f"{count(len(twin_lines), 'line')} name{'s' if len(twin_lines) == 1 else ''} its counterpart {twin_leaf}"] if twin_lines else []
     found += [f"{count(own_kind, 'line')} name{'s' if own_kind == 1 else ''} another class's or test's own {leaf} (not listed)"] if own_kind else []
-    found += [f"{count(in_docs, 'line')} in docs (not listed)"] if in_docs else []
+    found += [f"{count(len(docs), 'line')} in docs" + (f" ({DOC_LINES} listed)" if len(docs) > DOC_LINES else "")] if docs else []
     caveat = f"A call made through another name (an alias, a value passed as a callback, getattr) shows only where {leaf} itself is written."
     if left or capped or cut_short:
         verdict = "PARTIAL"

@@ -551,7 +551,9 @@ class ResolveTest(unittest.TestCase):
         # A test that calls it is listed before one that only imports it.
         self.assertLess(text.index("tests/test_settings.py:5 test_merge:"), text.index("tests/test_settings.py:1:"))
         self.assertEqual(response["verdict"], "COMPLETE")
-        self.assertIn("2 definitions in the code call it (3 call lines); 1 other line in the code names it; 2 lines in tests; 1 line in docs (not listed)", text)
+        self.assertIn("2 definitions in the code call it (3 call lines); 1 other line in the code names it; 2 lines in tests; 1 line in docs", text)
+        # A doc line can say what a change breaks for users, so a few are shown.
+        self.assertIn("=== DOCS naming merge_setting (one line each)\ndocs/api.md:3: merge_setting merges two dicts.", text)
 
     def test_a_long_caller_is_shown_around_its_call_and_an_unknown_receiver_is_listed(self):
         temporary = tempfile.TemporaryDirectory(prefix="balecontext-callsite-")
