@@ -23,6 +23,7 @@ TEST_WORDS = {"test", "tests", "testing", "spec", "specs"}
 # "the next request", "the same session": after a determiner these only describe the noun.
 GENERIC_ADJECTIVES = {"next", "previous", "first", "last", "new", "old", "same", "other", "current", "following", "original", "final"}
 DETERMINERS = {"the", "a", "an", "this", "that", "each", "every", "its", "their", "our", "your", "my"}
+AUXILIARIES = {"does", "do", "did", "is", "are", "was", "were", "can", "could", "will", "would", "should"}
 DOC_WORDS = {"doc", "docs", "documentation", "guide", "readme"}
 # Words a question uses where code says something else ("choose the proxy" -> select_proxy).
 SYNONYMS = {"choose": ("select",), "chooses": ("select",), "chosen": ("select",), "pick": ("select",), "picks": ("select",)}
@@ -109,7 +110,12 @@ def _is_identifier(token: str, called: bool) -> bool:
     return bool(re.match(r"[A-Z]{2,}[a-z]", token))
 
 
-def parse(query: str) -> Query:
+def parse(query: str, project_name: str = "") -> Query:
+    """Read a question as identifiers and stemmed words.
+
+    `project_name` is the project's own package (`django`): a question uses it as the
+    project's name ("Django's URL resolver"), so as a plain word it names no definition.
+    """
     result = Query()
     seen_words: set[str] = set()
     seen_identifiers: set[str] = set()
@@ -119,13 +125,14 @@ def parse(query: str) -> Query:
     result.wants_types = bool(lowered & {"type", "types", "interface", "interfaces", "typing"})
     result.possessives = {(stem(owner), stem(thing)) for owner, thing in re.findall(r"\b([A-Za-z]+)['\u2019]s\s+([A-Za-z]+)", query)}
     result.possessives |= {(stem(owner), stem(thing)) for thing, owner in re.findall(r"\b([A-Za-z]+)\s+of\s+(?:a|an|the|each|every)\s+([A-Za-z]+)", query)}
+    result.possessives = {(owner, thing) for owner, thing in result.possessives if owner != stem(project_name)} if project_name else result.possessives
     tokens = [match.group(0) for match in TOKEN.finditer(query)]
     for position, token in enumerate(tokens):
         previous = tokens[position - 1].lower() if position else ""
         following = tokens[position + 1].lower() if position + 1 < len(tokens) else ""
         called = token.endswith("()")
         token = token.removesuffix("()").strip(".")
-        if not token:
+        if not token or not called and token.lower() == project_name:
             continue
         if token.lower().endswith(CODE_EXTENSIONS + DOC_EXTENSIONS) and "." in token:
             # A file name: keep its stem as a path word.
@@ -141,9 +148,10 @@ def parse(query: str) -> Query:
             words = split_identifier(token)
             if previous in DETERMINERS and token.lower() in GENERIC_ADJECTIVES:
                 continue
-            # "the next request", "the Session": after a determiner a plain word is a noun or an
-            # adjective, not a function's name, unless the question says so ("the compose function").
-            named = previous not in DETERMINERS or following in {"function", "method", "helper"}
+            # A plain word is taken as a function's name where a question puts one: right after
+            # "does" or "is" ("How does compose run middleware?") or before "function". Elsewhere
+            # it describes ("the template engine", "the block tags").
+            named = previous in AUXILIARIES or following in {"function", "method", "helper"}
             if len(words) == 1 and len(words[0]) > 2 and words[0] not in STOP and named:
                 result.prose_words.add(stem(words[0]))
         for word in words:
@@ -171,6 +179,20 @@ class Entry:
     path_tokens: set[str]
     file_stem: str
     category: str
+
+
+def package_name(paths: list[str]) -> str:
+    """The project's own package directory (`django`, `src/requests` -> `requests`): the deepest
+    directory holding at least 80% of the code files, or "" when none does."""
+    prefix: tuple[str, ...] = ()
+    while paths:
+        below = [PurePosixPath(path).parts for path in paths]
+        below = [parts[len(prefix)] for parts in below if len(parts) > len(prefix) + 1 and parts[:len(prefix)] == prefix]
+        top = max(set(below), key=below.count, default=None)
+        if top is None or below.count(top) < 0.8 * len(paths):
+            break
+        prefix += (top,)
+    return prefix[-1].lower() if prefix else ""
 
 
 class SymbolTable:
@@ -207,6 +229,7 @@ class SymbolTable:
             for token in entry.path_tokens:
                 self.by_path_token.setdefault(token, []).append(index)
         self.total = max(1, len(self.entries))
+        self.package = package_name([path for path, (_, _, category) in by_path.items() if category == "code"])
 
     def idf(self, postings: list[int] | None) -> float:
         return math.log(1 + self.total / (1 + len(postings or ())))

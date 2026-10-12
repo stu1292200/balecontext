@@ -520,6 +520,34 @@ class HookTest(unittest.TestCase):
         self.assertIn("order.audit += 4", text)
         self.assertNotIn("overflow_path", response)
 
+    def test_project_name_in_a_question_is_not_a_definition_name(self):
+        # Every code file is under django/, so "Django's" names the project, not GeoType.django.
+        (self.root / "django/gis").mkdir(parents=True)
+        (self.root / "django/gis/geo.py").write_text(
+            "class GeoType:\n    @property\n    def django(self):\n        return self.name\n", encoding="utf-8")
+        (self.root / "django/urls").mkdir(parents=True)
+        (self.root / "django/urls/resolvers.py").write_text(
+            "class Resolver:\n    def resolve(self, path):\n        for pattern in self.patterns:\n"
+            "            if pattern.match(path):\n                return pattern\n        return None\n", encoding="utf-8")
+        response = context(Project(self.root), "How does Django's URL resolver match a request path?", 2000)
+        names = [source["name"] for source in response["sources"]]
+        self.assertEqual(names[0], "Resolver.resolve")
+        self.assertNotIn("GeoType.django", names)
+
+    def test_a_describing_word_is_not_taken_as_a_function_name(self):
+        (self.root / "django/template").mkdir(parents=True)
+        (self.root / "django/template/utils.py").write_text(
+            "class EngineHandler:\n    @property\n    def templates(self):\n        return self._templates\n", encoding="utf-8")
+        (self.root / "django/template/loader_tags.py").write_text(
+            "class ExtendsNode:\n    def render(self, context):\n        parent = self.get_parent(context)\n"
+            "        return parent.render(context)\n\n\nclass BlockNode:\n    def render(self, context):\n"
+            "        return self.nodelist.render(context)\n", encoding="utf-8")
+        response = context(Project(self.root), "How does Django's template engine render the extends and block tags?", 2000)
+        names = [source["name"] for source in response["sources"]]
+        # "template" describes the engine here; the tags' own render methods are the answer.
+        self.assertIn(names[0], ("ExtendsNode.render", "BlockNode.render"))
+        self.assertNotIn("EngineHandler.templates", names[:2])
+
     def test_follow_up_shows_the_definition_it_asks_about_whole(self):
         helpers = "".join(f"def stamp_{i}(req):\n" + "".join(f"    req.headers[{j}] = {j}  # stamp a header on the request\n" for j in range(24)) + "    return req\n\n" for i in range(4))
         redirects = "def follow_redirects(resp, req):\n" + "".join(f"    resp.hops += {j}  # count one redirect hop\n" for j in range(90)) + "    return resp\n\n"

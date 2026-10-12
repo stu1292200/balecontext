@@ -530,9 +530,9 @@ def context(project: Project, query: str, budget: int = 3000, session: dict | No
     terms(query)
     project.index()
     limit = min(budget, cap)
-    parsed = rank.parse(query)
     with project.connect(snapshot=True) as db:
         table = _symbol_table(project, db)
+        parsed = rank.parse(query, table.package)
         body = _body_matches(db, query)
         body_scores = {row["id"]: 40.0 * (1 - index / max(1, len(body))) for index, row in enumerate(body) if row["kind"] not in {"file", "chunk"}}
         ranked = rank.score(table, parsed, body_scores)

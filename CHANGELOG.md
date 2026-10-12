@@ -111,6 +111,14 @@
   carries all of `resolve_redirects` (9,350 characters, no saved file), where before
   Claude read its last 34 lines in an extra step; the 31 gold questions, relevance and
   the Django conversation are unchanged.
+- The project's own name in a question ("Django's URL resolver") no longer names a
+  definition: the deepest folder holding at least 80% of the code (`django`, `requests`)
+  is read as the project, so `OGRGeomType.django` no longer leads a URL-resolver pack.
+- A plain word counts as a function's name only where a question puts one: right after
+  "does" or "is" ("How does compose run middleware?") or before "function". "Django's
+  template engine render the extends and block tags" now leads with `ExtendsNode.render`
+  instead of `EngineHandler.templates`, `EngineMixin.engine` and `Message.tags`. The 31 gold
+  questions and both paid-test conversations are unchanged.
 - `benchmarks/claude_pair.py` writes `share.md` itself at the end of a test.
 - `benchmarks/share_results.py` bundles one paired test (summary, per-question figures,
   per-call usage, tool calls and answers) into a single `share.md`.
