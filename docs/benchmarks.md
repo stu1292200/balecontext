@@ -6,6 +6,12 @@ it yourself. It is updated as new runs come in.
 
 **Last updated:** 12 October 2026.
 
+> **Scope so far:** every result below is from **explanation questions** (one
+> question, or a conversation of three or four) on Django, requests and
+> Express. Bigger tasks, where plain Claude searches many more files over many
+> steps and where we expect savings near 90%, have not been run yet. They will
+> be added under [Bigger tasks](#bigger-tasks-not-run-yet).
+
 ## The short version
 
 1. **What we count:** the total tokens Claude Code reports for the whole task,
@@ -91,7 +97,7 @@ That matches what we measured: a short Django question went from about 89k to
 24k tokens (73%), while the hardest Django question went from 226k to 34k
 (85%).
 
-## All paid runs so far
+## All paid runs so far (explanation questions)
 
 "Saving" is `1 − hook ÷ without`. A negative saving means BaleContext used
 more. Commits refer to the BaleContext version tested (on the development
@@ -167,6 +173,18 @@ This table explains the gap between tokens and cost. Plain Claude's extra
 tokens are almost all cache reads (re-sending the growing conversation on each
 step), which are priced at about a tenth of normal input. Cache writes and the
 answer itself cost about the same in both arms.
+
+## Bigger tasks (not run yet)
+
+This section will hold the results for bigger tasks: questions and changes
+where plain Claude Code needs ten or more steps, and later bug fixes and small
+features that must pass the project's tests. They will be measured the same
+way as above (same model and prompt, whole-task totals, every run reported,
+answers checked against the source).
+
+| Date | Version | Project, task | Runs | Without (median tokens) | BaleContext | Token saving | Cost saving | Notes |
+|---|---|---|---|---|---|---|---|---|
+| | | *No runs yet* | | | | | | |
 
 ## Offline relevance checks (no model calls)
 
