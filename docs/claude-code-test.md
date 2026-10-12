@@ -15,10 +15,14 @@ balecontext install claude --hook     # adds .mcp.json, a short CLAUDE.md block 
 `--hook` adds a Claude Code prompt hook to `.claude/settings.json`. When your
 message names code in the project, BaleContext hands Claude the evidence before
 its first turn, so a well-covered question can be answered without any search.
-Messages that name no project code get nothing added. Within one conversation,
-source already sent for an earlier message is named rather than sent again; the
-hook forgets that when Claude Code compacts the conversation. Each prompt is
-logged (time and size only) in `.balecontext/hook-log.jsonl`.
+Messages that name no project code get nothing added. Claude Code keeps up to
+10,000 characters from each hook, so the hook is registered five times
+(`--part 2` to `--part 5` beside the first): Claude Code runs them side by side,
+and evidence longer than one hook's limit arrives in up to five parts with the
+message. Within one conversation, source already sent for an earlier message is
+named rather than sent again; the hook forgets that when Claude Code compacts the
+conversation. Each prompt is logged (time and sizes only) in
+`.balecontext/hook-log.jsonl`.
 
 Restart Claude Code in that folder, approve the `balecontext` server when asked,
 and run `/mcp`: it should list five BaleContext tools.
@@ -88,7 +92,7 @@ question (`claude -p --resume`), as when you come back to a saved conversation.
 The hook remembers, per conversation, which source it already sent and names it
 instead of sending it again, until Claude Code compacts the conversation. When the
 second question starts from code already sent, the hook adds only the new definitions
-it names and writes no saved file.
+it names, with no extra parts.
 
 ```
 py benchmarks\claude_pair.py C:\path\to\requests-test --question-file benchmarks\questions\requests-session-request.txt --followup-file benchmarks\questions\requests-session-send-followup.txt --runs 3

@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import sqlite3
 import sys
 import time
@@ -66,6 +67,7 @@ def parser() -> argparse.ArgumentParser:
                 sub.add_argument("--hook", action="store_true", help="Claude Code only: also hand BaleContext evidence to the model on each prompt")
         elif command == "hook":
             sub.add_argument("client", choices=["claude"])
+            sub.add_argument("--part", type=int, default=1, help="Which piece of the evidence to print; Claude Code runs the parts side by side")
         elif command == "remember":
             sub.add_argument("text")
             sub.add_argument("--source", action="append", required=True, dest="sources")
@@ -82,7 +84,12 @@ def main(argv: list[str] | None = None) -> int:
         sys.stdout.reconfigure(encoding="utf-8")
     if args.command == "hook":
         from .hook import run_claude
-        return run_claude()  # Never index a new folder or fail the prompt from a hook.
+        code = run_claude(part=args.part)  # Never index a new folder or fail the prompt from a hook.
+        # Claude Code waits for the hook to exit, and adds hook context in the order hooks exit.
+        # Skipping the interpreter's teardown of what retrieval loaded saves a third of a second
+        # and lets part 1 finish before the parts that follow it.
+        sys.stdout.flush()
+        os._exit(code)
     try:
         project = Project(args.root)
         if args.command == "mcp":

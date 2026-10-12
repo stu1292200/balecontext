@@ -35,11 +35,12 @@ def evaluate(project: Project, question: dict, budget: int, hook: bool = False) 
     started = time.monotonic()
     if hook:
         found = prompt_pack(project, question["query"])
-        response = found[1] | {"estimated_tokens": -(-len(found[0].encode("utf-8")) // 4)} if found else {"sources": [], "estimated_tokens": 0, "verdict": "NO HOOK"}
+        sent = found[0] + "".join(found[1].get("parts", [])) if found else ""
+        response = found[1] | {"estimated_tokens": -(-len(sent.encode("utf-8")) // 4)} if found else {"sources": [], "estimated_tokens": 0, "verdict": "NO HOOK"}
     else:
         response = context(project, question["query"], budget)
     elapsed = time.monotonic() - started
-    # The hook's overflow file is read in one step, so its definitions count as shown.
+    # The hook's extra parts arrive with the pack, so their definitions count as shown.
     shown = [_key(source) for source in response["sources"] + response.get("overflow_sources", [])]
     listed = set(shown) if hook else {_key(item) for item in response.get("map", [])} | set(shown)
     # Aliases (`res.set = res.header = function ...`) share one range: the same code was shown.

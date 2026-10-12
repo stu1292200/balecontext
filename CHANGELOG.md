@@ -153,6 +153,17 @@
   three harder multi-file questions (request handling, management commands, extends and block
   tags); the hook shows every expected definition for all three. Of the 31 earlier gold questions
   only basic auth changes (+1,256 characters, still COMPLETE).
+- The rest of a PARTIAL pack now reaches the model with the question, instead of in a saved
+  file it reads in a second model call that re-reads the whole conversation. Claude Code keeps
+  up to 10,000 characters from each hook and runs a prompt's hooks side by side, so
+  `install claude --hook` registers the hook for `UserPromptSubmit` five times (`--part 2` to
+  `--part 5` beside part 1; an earlier install gets the missing parts added). Part 1 builds the
+  pack as before and hands what does not fit to the parts, which print one piece each, in order.
+  The saved file is still written and named, for the model to read only if a part is missing
+  (an older settings file). Leftovers that were too small for a saved file are sent as a part
+  too, since a part costs no extra step. In a local Claude Code replay, the hard Django
+  question's pack and three parts (38,000 characters) all reach the first model request in
+  full. The hook also exits without the interpreter's teardown, a third of a second sooner.
 - `benchmarks/claude_pair.py` writes `share.md` itself at the end of a test.
 - `benchmarks/share_results.py` bundles one paired test (summary, per-question figures,
   per-call usage, tool calls and answers) into a single `share.md`.

@@ -221,6 +221,13 @@ def run_arm(arm: str, args, question: str, mcp_config: Path, out: Path, number: 
             print("  WARNING: the prompt hook did not run in this Claude Code version; this arm equals 'without'.")
         elif not any(json.loads(line).get("context_chars") for line in new_lines):
             print("  Note: the hook ran but found nothing to add for this question.")
+        # What the hook added for each question, at the top of that question's tool calls.
+        added = [json.loads(line) for line in new_lines]
+        starts = [0] + [index + 1 for index, call in enumerate(calls) if call.startswith("--- follow-up question")]
+        for start, line in reversed(list(zip(starts, added))):
+            parts = line.get("part_chars") or []
+            calls.insert(start, "[hook] " + (f"pack {line['context_chars']:,} chars" + (" + parts " + ", ".join(f"{n:,}" for n in parts) if parts else "")
+                                             if line.get("context_chars") else "nothing added"))
     (out / f"run{number}-{arm}.tools.txt").write_text("\n".join(calls) + "\n", encoding="utf-8")
     row = dict(usage)
     row.update({
@@ -230,7 +237,7 @@ def run_arm(arm: str, args, question: str, mcp_config: Path, out: Path, number: 
         "turns": turns,
         "seconds": seconds,
         "hook_ran": hook_ran,
-        "tool_calls": sum(not c.startswith(("  ->", "---")) for c in calls),
+        "tool_calls": sum(not c.startswith(("  ->", "---", "[hook]")) for c in calls),
         "error": any(result.get("is_error", False) or result.get("subtype") not in (None, "success") for result in errors),
     })
     if followups:

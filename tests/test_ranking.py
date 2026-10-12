@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import importlib.util
+import re
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from balecontext import rank
 from balecontext.extract import extract, resolve
@@ -641,6 +643,74 @@ class HookTest(unittest.TestCase):
         self.assertIn("order.total += 39  # adjust the order total", rest)
         self.assertNotRegex(rest, r"(?m)^\d+: *$")
 
+    def test_partial_pack_sends_the_rest_as_parts_each_within_the_limit(self):
+        helpers = "".join(f"def step_{i}(order):\n" + "".join(f"    order.total += {j}  # adjust the order total\n" for j in range(40)) + "    return order\n\n" for i in range(8))
+        entry = "def checkout_order(order):\n" + "".join(f"    order = step_{i}(order)\n" for i in range(8)) + "    return order\n"
+        (self.root / "shop.py").write_text(helpers + entry, encoding="utf-8")
+        from balecontext import hook
+        project = Project(self.root)
+        project.index()
+        text, response = hook.prompt_pack(project, "How does checkout_order work through each step?")
+        parts = response["parts"]
+        self.assertTrue(1 <= len(parts) <= hook.EXTRA_PARTS)
+        for number, part in enumerate(parts, 2):
+            self.assertLessEqual(len(part), hook.MAX_CHARS)
+            self.assertTrue(part.startswith(f"BaleContext evidence, part {number} of {len(parts) + 1} for the question above"))
+        # The pack points at the parts, and at the saved file only in case a part did not arrive.
+        self.assertIn("follows in BaleContext part", text)
+        self.assertIn(f"Only if a part is missing, read {response['overflow_path']} instead.", text)
+        rest = "\n".join(parts)
+        self.assertIn("order.total += 39  # adjust the order total", rest)
+        self.assertTrue(parts[-1].rstrip().endswith("Read a deeper helper or an outlined range only if the answer needs that detail."))
+        self.assertEqual(rest.count("COVERAGE: "), 1)
+
+    def test_a_long_block_is_cut_between_lines_into_parts_that_fit(self):
+        from balecontext.hook import _split
+        block = "=== big.py:1-400 load (entry point)\n" + "\n".join(f"{n}: value_{n} = compute(value_{n - 1})" for n in range(2, 400))
+        groups = _split(["=== small.py:1-2 tiny (helper)\n1: pass", block, "DEEPER HELPERS (bodies not shown):\nx.py:1-9 helper"], 2000)
+        self.assertTrue(all(len("\n\n".join(group)) <= 2000 for group in groups))
+        joined = "\n".join("\n".join(group) for group in groups)
+        self.assertIn("=== big.py:1-400 load (continued)\n", joined)
+        lines = [line for line in joined.splitlines() if line.split(":")[0].isdigit()]
+        self.assertEqual(lines, ["1: pass"] + [f"{n}: value_{n} = compute(value_{n - 1})" for n in range(2, 400)])
+
+    def test_parts_print_what_part_one_hands_over(self):
+        import io
+        import json
+        import time
+        from balecontext import hook
+        helpers = "".join(f"def step_{i}(order):\n" + "".join(f"    order.total += {j}  # adjust the order total\n" for j in range(40)) + "    return order\n\n" for i in range(8))
+        entry = "def checkout_order(order):\n" + "".join(f"    order = step_{i}(order)\n" for i in range(8)) + "    return order\n"
+        (self.root / "shop.py").write_text(helpers + entry, encoding="utf-8")
+        Project(self.root).index()
+
+        def run(prompt: str, part: int, session: str) -> str:
+            output = io.StringIO()
+            event = {"prompt": prompt, "cwd": str(self.root), "session_id": session, "hook_event_name": "UserPromptSubmit"}
+            # Claude Code starts the parts with part 1; here they start after it, however slow the machine.
+            with mock.patch.object(hook, "PART_SKEW", 600):
+                self.assertEqual(hook.run_claude(io.StringIO(json.dumps(event)), output, part=part), 0)
+            return output.getvalue()
+
+        question = "How does checkout_order work through each step?"
+        main = json.loads(run(question, 1, "conversation-1"))["hookSpecificOutput"]["additionalContext"]
+        count = int(re.search(r"BaleContext parts? 2(?: to (\d))?", main).group(1) or 2) - 1
+        pieces = [run(question, part, "conversation-1") for part in range(2, hook.EXTRA_PARTS + 2)]
+        for number, piece in enumerate(pieces, 2):
+            if number - 2 < count:
+                self.assertTrue(json.loads(piece)["hookSpecificOutput"]["additionalContext"].startswith(f"BaleContext evidence, part {number} of {count + 1}"))
+            else:
+                self.assertEqual(piece, "")
+        log = json.loads((self.root / ".balecontext" / "hook-log.jsonl").read_text(encoding="utf-8").splitlines()[-1])
+        self.assertEqual(len(log["part_chars"]), count)
+        # Chat gets nothing from any part, and a part whose part 1 never ran stops waiting soon.
+        self.assertEqual(run("thanks, that was really helpful", 1, "conversation-1"), "")
+        self.assertEqual(run("thanks, that was really helpful", 2, "conversation-1"), "")
+        started = time.monotonic()
+        with mock.patch.object(hook, "PART_START", 0.2):
+            self.assertEqual(run("How does checkout_order work in another conversation?", 2, "conversation-2"), "")
+        self.assertLess(time.monotonic() - started, 3)
+
     def test_saved_file_outlines_calls_outside_the_chain_and_names_their_helpers(self):
         steps = "".join(f"def step_{i}(order):\n" + "".join(f"    order.total += {j}  # adjust the order total\n" for j in range(40)) + "    return order\n\n" for i in range(8))
         entry = "def checkout_order(order, gateway):\n" + "".join(f"    order = step_{i}(order)\n" for i in range(8)) + "    gateway.settle_account(order)\n    return order\n"
@@ -801,6 +871,17 @@ class HookTest(unittest.TestCase):
         for event in ("UserPromptSubmit", "PreCompact"):
             self.assertEqual(len(data["hooks"][event]), 1)
             self.assertEqual(data["hooks"][event][0]["hooks"][0]["args"][-2:], ["hook", "claude"])
+        # Part 1 builds the evidence; the other parts carry what does not fit in one hook's context.
+        self.assertEqual([h["args"][4:] for h in data["hooks"]["UserPromptSubmit"][0]["hooks"]], [[]] + [["--part", str(n)] for n in range(2, 6)])
+        self.assertEqual(len(data["hooks"]["PreCompact"][0]["hooks"]), 1)
+        # An earlier install with part 1 alone gets the other parts added once.
+        data["hooks"]["UserPromptSubmit"][0]["hooks"] = data["hooks"]["UserPromptSubmit"][0]["hooks"][:1]
+        settings.write_text(json.dumps(data), encoding="utf-8")
+        self.assertIn(".claude/settings.json", install(project, "claude", hook=True)["changed"])
+        self.assertNotIn(".claude/settings.json", install(project, "claude", hook=True)["changed"])
+        data = json.loads(settings.read_text(encoding="utf-8"))
+        parts = [h["args"][4:] for group in data["hooks"]["UserPromptSubmit"] for h in group["hooks"]]
+        self.assertEqual(sorted(parts), sorted([[]] + [["--part", str(n)] for n in range(2, 6)]))
         with self.assertRaises(ValueError):
             install(project, "codex", hook=True)
         self.assertFalse((self.root / ".codex").exists())

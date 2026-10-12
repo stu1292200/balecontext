@@ -10,6 +10,7 @@ import tomllib
 from datetime import datetime, timezone
 
 from .files import safe_path
+from .hook import EXTRA_PARTS
 from .store import Project
 
 INSTRUCTIONS = """<!-- balecontext:start -->
@@ -49,18 +50,31 @@ def _write(path, text: str) -> None:
             os.unlink(temporary)
 
 
-def hook_settings() -> dict:
+def hook_settings(part: int = 1) -> dict:
     """Claude Code hook command, run without a shell so paths with spaces work."""
-    return {"type": "command", "command": sys.executable, "args": ["-m", "balecontext", "hook", "claude"], "timeout": 30}
+    return {"type": "command", "command": sys.executable, "args": ["-m", "balecontext", "hook", "claude"] + (["--part", str(part)] if part > 1 else []), "timeout": 30}
 
 
-# UserPromptSubmit hands the model evidence; PreCompact makes the hook forget what it sent,
-# because compaction summarises that evidence away.
-HOOK_EVENTS = ("UserPromptSubmit", "PreCompact")
+# UserPromptSubmit hands the model evidence: part 1 builds it, and the other parts, run alongside,
+# each carry one more piece of it (Claude Code keeps up to 10,000 characters from each hook).
+# PreCompact makes the hook forget what it sent, because compaction summarises that evidence away.
+HOOK_PARTS = {"UserPromptSubmit": range(1, EXTRA_PARTS + 2), "PreCompact": range(1, 2)}
 
 
 def hook_config() -> dict:
-    return {"hooks": {event: [{"hooks": [hook_settings()]}] for event in HOOK_EVENTS}}
+    return {"hooks": {event: [{"hooks": [hook_settings(part) for part in parts]}] for event, parts in HOOK_PARTS.items()}}
+
+
+def _hook_part(entry) -> int | None:
+    """Which part of BaleContext's prompt hook a settings entry runs, or None for any other hook."""
+    args = entry.get("args") if isinstance(entry, dict) else None
+    if not isinstance(args, list):
+        return None
+    if args[-2:] == ["hook", "claude"]:
+        return 1
+    if args[-4:-1] == ["hook", "claude", "--part"] and str(args[-1]).isdigit():
+        return int(args[-1])
+    return None
 
 
 def _install_hook(project: Project, dry_run: bool) -> list[str]:
@@ -70,13 +84,15 @@ def _install_hook(project: Project, dry_run: bool) -> list[str]:
     if not isinstance(settings, dict) or not isinstance(settings.get("hooks", {}), dict):
         raise ValueError(".claude/settings.json must contain an object of hooks.")
     changed = False
-    for event in HOOK_EVENTS:
+    for event, parts in HOOK_PARTS.items():
         groups = settings.setdefault("hooks", {}).setdefault(event, [])
         if not isinstance(groups, list):
             raise ValueError(f"{event} hooks must be a list.")
-        present = any(isinstance(h, dict) and h.get("args", [])[-2:] == ["hook", "claude"] for g in groups if isinstance(g, dict) for h in g.get("hooks", []))
-        if not present:
-            groups.append({"hooks": [hook_settings()]})
+        present = {_hook_part(h) for g in groups if isinstance(g, dict) and isinstance(g.get("hooks"), list) for h in g["hooks"]}
+        # An earlier install has part 1 alone; the parts it lacks are added beside it.
+        missing = [hook_settings(part) for part in parts if part not in present]
+        if missing:
+            groups.append({"hooks": missing})
             changed = True
     if not changed:
         return []
