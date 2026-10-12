@@ -122,6 +122,7 @@ def run_arm(arm: str, args, question: str, mcp_config: Path, out: Path, number: 
     usage = {field: int((data.get("usage") or {}).get(field) or 0) for field in USAGE_FIELDS}
     cost, turns = data.get("total_cost_usd"), data.get("num_turns")
     first = {"tokens": sum(usage.values()), "cost": cost}
+    first_usage, first_turns = dict(usage), turns
     if followup:
         # A second question in the same conversation (`--resume`), as people use Claude Code.
         later, later_calls, own = invoke(arm, args, followup, mcp_config, out, f"run{number}-{arm}.followup", resume=data.get("session_id"))
@@ -157,7 +158,9 @@ def run_arm(arm: str, args, question: str, mcp_config: Path, out: Path, number: 
         "error": data.get("is_error", False) or data.get("subtype") not in (None, "success"),
     })
     if followup:
-        row["first_question"] = first
+        # Raw figures, so the totals can be recomputed if Claude Code reports resumed runs differently.
+        row["first_question"] = first | {"usage": first_usage, "turns": first_turns}
+        row["followup_reported"] = {"usage": reported, "cost_usd_estimate": later_cost, "turns": later.get("num_turns"), "own_calls": own, "cumulative": cumulative}
         row["followup_tokens"] = row["total_tokens"] - first["tokens"]
         row["followup_cost_usd_estimate"] = cost - first["cost"] if isinstance(cost, (int, float)) and isinstance(first["cost"], (int, float)) else None
     return row
