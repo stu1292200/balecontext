@@ -414,6 +414,78 @@ class ResolveTest(unittest.TestCase):
             self.assertIn(name, names)
         self.assertIn("sets self._chain, which Handler.handle calls at line 20", response["text"])
 
+    def test_tags_the_question_names_lead_and_calls_resolve_near_the_caller(self):
+        temporary = tempfile.TemporaryDirectory(prefix="balecontext-tags-")
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        (root / "template").mkdir()
+        (root / "forms").mkdir()
+        (root / "template" / "loader_tags.py").write_text(
+            "class BlockContext:\n    def __init__(self):\n        self.blocks = {}\n\n"
+            "    def pop(self, name):\n        return self.blocks.pop(name, None)\n\n\n"
+            "class BlockNode:\n    def render(self, context):\n        block_context = context.render_context.get('block_context')\n"
+            "        block = block_context.pop(self.name)\n        return block.nodelist.render(context)\n\n\n"
+            "class ExtendsNode:\n    def render(self, context):\n        compiled_parent = self.get_parent(context)\n"
+            "        context.render_context.setdefault('block_context', BlockContext())\n        return compiled_parent._render(context)\n\n"
+            "    def get_parent(self, context):\n        return context.template.engine.get_template(self.parent_name)\n", encoding="utf-8")
+        (root / "template" / "base.py").write_text(
+            "class Parser:\n    def invalid_block_tag(self, token, command, parse_until=None):\n        raise ValueError(command)\n\n"
+            "    def unclosed_block_tag(self, parse_until):\n        raise ValueError(parse_until)\n\n\n"
+            "class Template:\n    def _render(self, context):\n        return self.nodelist.render(context)\n\n\n"
+            "class QueryDict:\n    def pop(self, key):\n        return key\n", encoding="utf-8")
+        (root / "template" / "defaulttags.py").write_text(
+            "class TemplateTagNode:\n    def render(self, context):\n        return self.mapping.get(self.tagtype, '')\n", encoding="utf-8")
+        (root / "forms" / "widgets.py").write_text(
+            "class Widget:\n    def _render(self, template_name, context, renderer=None):\n        return renderer.render(template_name, context)\n\n\n"
+            "class Holder:\n    def clear(self):\n        self.__dict__.pop('cache', None)\n", encoding="utf-8")
+        response = context(Project(root), "How does the template engine render the extends and block tags?")
+        names = [source["name"] for source in response["sources"]]
+        self.assertEqual(names[0], "ExtendsNode.render")
+        # "block" names BlockNode as "extends" names ExtendsNode; error helpers named "block tag" are not the answer.
+        self.assertIn("BlockNode.render", names)
+        self.assertFalse({"Parser.invalid_block_tag", "Parser.unclosed_block_tag"} & set(names))
+        # `compiled_parent._render` from template/ is the template's, not a form widget's; `block_context`
+        # names BlockContext; `self.__dict__.pop` names no project class.
+        self.assertIn("Template._render", names)
+        self.assertNotIn("Widget._render", names)
+        self.assertIn("BlockContext.pop", names)
+        calls = self._calls({path: (root / path).read_text(encoding="utf-8") for path in ("forms/widgets.py", "template/base.py")})
+        self.assertFalse([call for call in calls if call[0] == "Holder.clear" and call[1] == "QueryDict.pop"])
+
+    def test_path_between_two_named_ends_comes_before_the_far_end_internals(self):
+        temporary = tempfile.TemporaryDirectory(prefix="balecontext-command-")
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        (root / "core" / "management" / "commands").mkdir(parents=True)
+        (root / "core" / "migrations").mkdir()
+        (root / "core" / "management" / "__init__.py").write_text(
+            "def load_command_class(name):\n    module = __import__('core.management.commands.' + name)\n    return module.Command()\n\n\n"
+            "class ManagementUtility:\n    def __init__(self, argv=None):\n        self.argv = argv\n\n"
+            "    def fetch_command(self, subcommand):\n        return load_command_class(subcommand)\n\n"
+            "    def execute(self):\n        self.fetch_command(self.argv[1]).run_from_argv(self.argv)\n\n\n"
+            "def execute_from_command_line(argv=None):\n    utility = ManagementUtility(argv)\n    utility.execute()\n", encoding="utf-8")
+        (root / "core" / "management" / "base.py").write_text(
+            "class BaseCommand:\n    def run_from_argv(self, argv):\n        self.execute(args=argv[2:])\n\n"
+            "    def execute(self, **options):\n        return self.handle(**options)\n\n"
+            "    def handle(self, **options):\n        raise NotImplementedError('subclasses must provide handle()')\n", encoding="utf-8")
+        (root / "core" / "management" / "commands" / "migrate.py").write_text(
+            "from core.management.base import BaseCommand\nfrom core.migrations.signals import emit_pre_migrate_signal, emit_post_migrate_signal\n"
+            "from core.migrations.executor import MigrationExecutor\n\n\n"
+            "class Command(BaseCommand):\n    def handle(self, **options):\n        emit_pre_migrate_signal(options)\n"
+            "        executor = MigrationExecutor(options)\n        executor.migrate(options)\n        emit_post_migrate_signal(options)\n", encoding="utf-8")
+        (root / "core" / "migrations" / "signals.py").write_text(
+            "def emit_pre_migrate_signal(options):\n    return options\n\n\ndef emit_post_migrate_signal(options):\n    return options\n", encoding="utf-8")
+        (root / "core" / "migrations" / "executor.py").write_text(
+            "class MigrationExecutor:\n    def __init__(self, options):\n        self.options = options\n\n"
+            "    def migrate(self, targets):\n        return [self.apply_migration(t) for t in targets]\n\n"
+            "    def apply_migration(self, migration):\n        return migration\n", encoding="utf-8")
+        response = context(Project(root), "How does the project run a management command such as migrate, from execute_from_command_line to the command's handle() method?", 1200, focus=True)
+        order = [item["name"] for item in response["map"]]
+        self.assertEqual(order[:2], ["execute_from_command_line", "ManagementUtility.execute"])
+        # The path to handle() (run_from_argv, execute) before what migrate's own handle() calls.
+        self.assertLess(order.index("BaseCommand.run_from_argv"), order.index("emit_pre_migrate_signal"))
+        self.assertLess(order.index("BaseCommand.execute"), order.index("MigrationExecutor.migrate"))
+
     def test_entry_is_the_outermost_matching_function(self):
         temporary = tempfile.TemporaryDirectory(prefix="balecontext-root-")
         self.addCleanup(temporary.cleanup)

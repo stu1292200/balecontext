@@ -304,7 +304,10 @@ def score(table: SymbolTable, query: Query, body_scores: dict[str, float] | None
         if entry.kind not in {"class", "type", "interface"} and len(entry.leaf_tokens) == 1 and stem(entry.leaf) in query.prose_words and len(table.by_leaf.get(entry.leaf, ())) <= 2:
             # A plain word that is a function's whole, distinctive name: "How does compose run middleware?"
             value += 150 * table.idf(table.by_leaf.get(entry.leaf))
-        value += sum(30 * word_idf[w] for w in owner_hits) * (0.5 + coverage)
+        # A class name counts fully when the method's own name matches too and the file's path does not
+        # already say it: "render the extends tag" is ExtendsNode.render in loader_tags.py, where
+        # "extends" names the class and "render" the method (TemplateTagNode in defaulttags.py adds nothing).
+        value += sum((60 if leaf_hits and w not in entry.path_tokens else 30) * word_idf[w] for w in owner_hits) * (0.5 + coverage)
         value += sum(30 * word_idf[w] for w in partial) * (0.5 + coverage)
         value += sum(12 * word_idf[w] for w in path_hits)
         value += body_scores.get(entry.id, 0.0)
@@ -351,6 +354,8 @@ def pick_seeds(query: Query, ranked: list[tuple[float, Entry, set[str]]], limit:
         return seeds
     top = ranked[0][0]
     leaves = {item[1].leaf for item in seeds}
+    words_asked = set(query.words)
+    identifier_leaves = {identifier.leaf.lower() for identifier in query.identifiers}
     extras = 0
     owners = lambda entry: entry.name_tokens - entry.leaf_tokens
     for item in ranked:
@@ -364,7 +369,11 @@ def pick_seeds(query: Query, ranked: list[tuple[float, Entry, set[str]]], limit:
             # well as BaseForm.errors, though `form.` matches BaseForm's name better.
             same = [other for other in seeds if other[1].leaf == item[1].leaf]
             taken = set().union(*(owners(other[1]) for other in same))
-            if item[1].category != "code" or not any(owner in owners(item[1]) - taken and thing in item[1].leaf_tokens for owner, thing in query.possessives):
+            # Or the question names this one's class and not theirs: "render the extends and block
+            # tags" is BlockNode.render as well as ExtendsNode.render. An identifier (`app.fetch`)
+            # names one definition, already picked.
+            named = (owners(item[1]) - taken - item[1].path_tokens) & words_asked if item[1].leaf not in identifier_leaves else set()
+            if item[1].category != "code" or not (named or any(owner in owners(item[1]) - taken and thing in item[1].leaf_tokens for owner, thing in query.possessives)):
                 continue
         seeds.append(item)
         used_ids.add(item[1].id)

@@ -131,6 +131,18 @@
   middleware chain, `_get_response`, URL resolution and the view call (it stopped at `get_response`
   and claimed COMPLETE); the 31 gold questions, relevance and both paid-test conversations are
   unchanged or gain only correct calls.
+- A class name the file's path does not already say counts like the method's own name when that
+  name matches too, and a second method of the same name joins when the question names its class:
+  "How does Django's template engine render the extends and block tags?" now leads with
+  `ExtendsNode.render` and `BlockNode.render` instead of the parser's error helpers for bad block
+  tags. Calls on an object of unknown type prefer the class named like it with underscores ignored
+  (`block_context.pop` is `BlockContext.pop`; `self.__dict__` names no class), then the definition
+  nearest the caller (`compiled_parent._render` in `django/template` is `Template._render`, not a form
+  widget's). Calls leaving the entry's own chain are followed before those leaving another match, and
+  what another match calls counts as its helpers: "from execute_from_command_line to the command's
+  handle()" follows `run_from_argv` and `BaseCommand.execute` before migrate's internals (index
+  schema 11). The 31 gold questions, relevance and both paid-test conversations are unchanged
+  apart from order.
 - `benchmarks/claude_pair.py` writes `share.md` itself at the end of a test.
 - `benchmarks/share_results.py` bundles one paired test (summary, per-question figures,
   per-call usage, tool calls and answers) into a single `share.md`.

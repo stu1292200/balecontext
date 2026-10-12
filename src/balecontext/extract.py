@@ -554,8 +554,10 @@ def resolve(nodes: list[dict], refs: list[dict]) -> list[dict]:
             # *Adapter class's send even though `send` is a common name. Otherwise only a name few
             # project methods share counts.
             defined = [c for c in methods_by_leaf.get(leaf, []) if c != ref["source"]]
-            receiver = name.rsplit(".", 2)[-2].lstrip("#_").lower()
-            owner = {c: by_id[c]["name"].rsplit(".", 1)[0].rsplit(".", 1)[-1].lower() for c in defined}
+            receiver = name.rsplit(".", 2)[-2]
+            # `block_context` names a BlockContext; `self.__dict__` names no project class.
+            receiver = "" if receiver.startswith("__") and receiver.endswith("__") else receiver.lstrip("#_").lower().replace("_", "")
+            owner = {c: by_id[c]["name"].rsplit(".", 1)[0].rsplit(".", 1)[-1].lower().replace("_", "") for c in defined}
             exact = [c for c in defined if owner[c] == receiver]
             suffix = [c for c in defined if len(receiver) >= 4 and owner[c].endswith(receiver)]
             candidates = exact or suffix or (defined if leaf in project_leaves else [])

@@ -8,6 +8,7 @@ import math
 import os
 import re
 from collections import deque
+from pathlib import PurePosixPath
 
 from . import rank
 from .files import SECRET_CONTENT
@@ -274,9 +275,13 @@ def _outward(db, item: dict) -> list[tuple[dict, str]]:
             found.append((row, _call_role(item, row, " (other file)")))
     for line, rows in by_line.items():
         # A real implementation before an abstract stub (BaseAdapter.send), a base class before its
-        # subclasses (ModelBackend before RemoteUserBackend), then the fuller definition.
+        # subclasses (ModelBackend before RemoteUserBackend), then the one nearest the caller
+        # (`compiled_parent._render` in django/template is Template._render, not a form widget's),
+        # then the fuller definition.
         group = list(rows)  # the list reads as empty while it is being sorted
-        rows.sort(key=lambda r: (_stub(db, r), not _base_of_others(db, r, group), -(r["end"] - r["start"]), r["path"], r["start"]))
+        caller_dirs = PurePosixPath(item["path"]).parent.parts
+        near = lambda r: next((i for i, (a, b) in enumerate(zip(caller_dirs, PurePosixPath(r["path"]).parent.parts)) if a != b), min(len(caller_dirs), len(PurePosixPath(r["path"]).parent.parts)))
+        rows.sort(key=lambda r: (_stub(db, r), not _base_of_others(db, r, group), -near(r), -(r["end"] - r["start"]), r["path"], r["start"]))
         others = ", ".join(r["name"] for r in rows[1:])
         found.append((rows[0], f"called by {item['name']} at line {line} (receiver type not known" + (f"; also defined as {others})" if others else ")")))
     return found
@@ -616,12 +621,21 @@ def context(project: Project, query: str, budget: int = 3000, session: dict | No
         # When the entry is a class header ("How does a ModelForm ... is_valid()"), the first
         # function seed carries the behaviour, so its chain is followed in full.
         lead = next((position for position, (_, entry, _) in enumerate(seeds) if entry.kind != "class"), None)
+        # The lead's chain, and what the other matches call: a question "from execute_from_command_line
+        # to the command's handle()" is about the path between them, not about migrate's internals.
+        lead_ids: set[str] = set()
+        seed_helper_ids: set[str] = set()
         for position, (_, entry, matched) in enumerate(seeds):
             item = {"id": entry.id, "path": entry.path, "name": entry.name, "kind": entry.kind, "start": entry.start, "end": entry.end}
+            before = set(planned_ids)
             plan(item, "entry" if position == 0 else ("matches " + ", ".join(sorted(matched)) if matched else "match"))
             if entry.kind != "class":
                 # The entry's chain may continue in another module (res.render -> app.render).
                 walk(item, 4 if position == lead else 1, cross=position == lead)
+            if position == lead or position == 0:
+                lead_ids |= planned_ids - before
+            else:
+                seed_helper_ids |= planned_ids - before - {entry.id}
         # Then the chain where it leaves this file: calls into other modules, calls on objects of
         # unknown type, and subclass overrides of the methods shown. Those near the entry or named
         # like the question are followed (shown if budget is left, else named in a PARTIAL verdict);
@@ -638,8 +652,9 @@ def context(project: Project, query: str, budget: int = 3000, session: dict | No
         def named_like_question(item: dict) -> bool:
             return bool({rank.stem(t) for t in rank.split_identifier(item["name"].rsplit(".", 1)[-1])} & query_words)
 
-        # Named like the question first (`adapter.send` for "sends a request"), then nearest the entry.
-        reach.sort(key=lambda pair: (not named_like_question(pair[1][0]), depth_of.get(pair[0]["id"], 0)))
+        # Named like the question first (`adapter.send` for "sends a request"), then calls leaving the
+        # lead's own chain before those leaving another match, then nearest the entry.
+        reach.sort(key=lambda pair: (not named_like_question(pair[1][0]), pair[0]["id"] not in lead_ids, depth_of.get(pair[0]["id"], 0)))
         # Classes the question names and their project base classes: an override in one of them is
         # the code that runs ("How does a ModelForm validate ..." -> BaseModelForm._post_clean), so its
         # calls are followed like any other call on the path.
@@ -659,7 +674,7 @@ def context(project: Project, query: str, budget: int = 3000, session: dict | No
         outward_limit = 2 * OUTWARD_LIMIT if wide else OUTWARD_LIMIT
         followed = 0
         deferred: list[dict] = []
-        helper_ids: set[str] = set()
+        helper_ids: set[str] = set(seed_helper_ids)
         for source, (item, role) in reach:
             if item["id"] in planned_ids or item["id"] in {e["id"] for e, _ in elsewhere + aside}:
                 continue
