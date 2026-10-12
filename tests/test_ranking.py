@@ -520,6 +520,22 @@ class HookTest(unittest.TestCase):
         self.assertIn("order.audit += 4", text)
         self.assertNotIn("overflow_path", response)
 
+    def test_entry_that_calls_nothing_shows_where_it_is_used(self):
+        (self.root / "utils.py").write_text(
+            "def select_route(url, routes):\n    for key in (url, 'all'):\n        if key in routes:\n            return routes[key]\n    return None\n", encoding="utf-8")
+        (self.root / "client.py").write_text(
+            "from utils import select_route\n\n\nclass Client:\n"
+            '    def connect(self, url, routes):\n        """Deprecated: use open_pool."""\n        return select_route(url, routes)\n\n'
+            "    def open_pool(self, url, routes):\n        route = select_route(url, routes)\n        return self.pool_for(route)\n\n"
+            "    def target_url(self, url, routes):\n        route = select_route(url, routes)\n        return url if route else '/'\n", encoding="utf-8")
+        response = context(Project(self.root), "How does it choose the route for a url?", 2000)
+        names = [source["name"] for source in response["sources"]]
+        # "choose" reads as select; the callers show how the choice is used, current code first.
+        self.assertEqual(names[0], "select_route")
+        self.assertIn("Client.open_pool", names)
+        self.assertIn("Client.target_url", names)
+        self.assertNotIn("Client.connect", names)
+
     def test_installer_adds_the_hook_once_and_keeps_other_settings(self):
         import json
         from balecontext.integrations import install

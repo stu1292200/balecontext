@@ -34,9 +34,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from balecontext.integrations import INSTRUCTIONS, hook_config  # noqa: E402
 from balecontext.store import Project  # noqa: E402
+from share_results import write_share  # noqa: E402
 
 READ_TOOLS = ["Read", "Grep", "Glob", "LS"]
 WRITE_TOOLS = ["Edit", "MultiEdit", "Write", "NotebookEdit", "Bash"]
@@ -282,6 +284,8 @@ def main(argv: list[str] | None = None) -> int:
               f"{row['cache_read_input_tokens']:>10,} {row['output_tokens']:>7,} {row['turns'] if row['turns'] is not None else '-':>5} {row['tool_calls']:>5} {cost:>7}")
     print(json.dumps(summary, indent=2))
     print(f"\nAnswers and raw results: {out}")
+    # The one file to attach when sharing this test.
+    print(f"To share: {write_share(out, min(2, args.runs))}")
     return 0
 
 

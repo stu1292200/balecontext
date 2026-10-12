@@ -164,7 +164,9 @@ def _render_body(files: _Files, item: dict, max_lines: int) -> tuple[list[tuple[
         numbered = kept
     numbered = _collapse_parameters(numbered)
     complete = True
-    if len(numbered) > max_lines:
+    # A body up to half again the limit is shown whole: cutting it would hide only a few lines
+    # but cost the reader another step to fetch them.
+    if len(numbered) > max_lines + max_lines // 2:
         numbered = numbered[:max_lines]
         complete = False
     return numbered, complete, note
@@ -513,6 +515,21 @@ def context(project: Project, query: str, budget: int = 3000, session: dict | No
                     helper_ids |= planned_ids - before
             else:
                 elsewhere.append((item, role))
+        # An entry that calls no project code ("how does requests choose the proxy" -> select_proxy)
+        # is explained by where it is used, so its first two callers are shown as well, current
+        # code before callers marked deprecated (`get_connection` beside its TLS-aware replacement).
+        # A utility called from many places is not: any two of its callers would be arbitrary.
+        # Tests calling it are not places it is used.
+        callers: list[dict] = []
+        for caller in _callers(db, seeds[0][1].id) if seeds and seeds[0][1].kind != "class" else []:
+            if rank.path_class(caller["path"]) == "code" and all(caller["id"] != other["id"] for other in callers):
+                callers.append(caller)
+        if 0 < len(callers) <= 3 and not _callees(db, seeds[0][1].id, seeds[0][1].path, True):
+            callers.sort(key=lambda c: "deprecat" in "\n".join(files.get(c["path"])[c["start"] - 1:c["start"] + 9]).lower())
+            for caller in callers[:2]:
+                if caller["id"] not in planned_ids:
+                    plan(caller, f"calls {seeds[0][1].name} at line {caller['line']}" if caller.get("line") else f"uses {seeds[0][1].name}")
+                    main_ids.add(caller["id"])
         # A large pack (the hook's saved file) shows every followed call before the helpers of any
         # one of them, so a trace keeps its breadth (Session.send's hooks, cookies and redirects).
         for item in deferred:
@@ -554,7 +571,8 @@ def context(project: Project, query: str, budget: int = 3000, session: dict | No
             elsewhere = [pair for pair in planned if pair not in keep] + elsewhere
             planned = keep
         map_lines = [_map_line(item, role) for item, role in planned + related_items]
-        footer_reserve = min(120 + estimate("\n".join(map_lines[:20])), limit // 4)
+        # The hook drops the map, so a focused pack keeps room only for the verdict lines.
+        footer_reserve = 250 if focus else min(120 + estimate("\n".join(map_lines[:20])), limit // 4)
         # Helpers are first shown up to HELPER_BODY lines; if that leaves budget unused,
         # the pack is rebuilt once with longer helpers so it can be complete.
         for helper_lines in (HELPER_BODY, LONG_BODY, FULL_BODY):

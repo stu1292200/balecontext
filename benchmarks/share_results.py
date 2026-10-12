@@ -33,7 +33,12 @@ def main() -> int:
     parser.add_argument("folder", type=Path)
     parser.add_argument("--run", type=int, default=2, help="Run whose model calls, tool calls and answers to include (default 2)")
     args = parser.parse_args()
-    folder = args.folder
+    print(f"Wrote {write_share(args.folder, args.run)}")
+    return 0
+
+
+def write_share(folder: Path, run: int = 2) -> Path:
+    """Write folder/share.md and return its path."""
     summary_file = folder / "summary.json"
     if not summary_file.exists():
         raise SystemExit(f"No summary.json in {folder}; is this a finished claude_pair.py results folder?")
@@ -50,8 +55,8 @@ def main() -> int:
             for number, (tokens, cost) in enumerate(zip(row.get("tokens_by_question", []), row.get("cost_by_question", [])), 1):
                 out.append(f"| {row['run']} | {row['arm']} | {number} | {tokens:,} | {cost if cost is not None else '-'} |")
         out.append("")
-    files = sorted(folder.glob(f"run{args.run}-*.jsonl"), key=_order)
-    out += [f"## Model calls, run {args.run}", "", "```", f"{'':29}" + "".join(f"{s:>10}" for s in SHORT)]
+    files = sorted(folder.glob(f"run{run}-*.jsonl"), key=_order)
+    out += [f"## Model calls, run {run}", "", "```", f"{'':29}" + "".join(f"{s:>10}" for s in SHORT)]
     for path in files:
         found, result = calls(path)
         out.append(f"{path.name}: {len(found)} model calls, num_turns={result.get('num_turns')}, total_cost_usd={result.get('total_cost_usd')}")
@@ -59,14 +64,13 @@ def main() -> int:
             out.append(f"  call {number:<3} {model[:18]:18}" + "".join(f"{int(usage.get(f) or 0):>10,}" for f in FIELDS))
         out.append(f"  {'result reports':27}" + "".join(f"{int((result.get('usage') or {}).get(f) or 0):>10,}" for f in FIELDS))
     out += ["```", ""]
-    for tools in sorted(folder.glob(f"run{args.run}-*.tools.txt")):
+    for tools in sorted(folder.glob(f"run{run}-*.tools.txt")):
         out += [f"## Tool calls: {tools.name}", "", "```", tools.read_text(encoding="utf-8").strip(), "```", ""]
-    for answer in sorted(folder.glob(f"run{args.run}-*.answer.md"), key=_order):
+    for answer in sorted(folder.glob(f"run{run}-*.answer.md"), key=_order):
         out += [f"## Answer: {answer.name}", "", answer.read_text(encoding="utf-8").strip(), ""]
     target = folder / "share.md"
     target.write_text("\n".join(out) + "\n", encoding="utf-8")
-    print(f"Wrote {target}")
-    return 0
+    return target
 
 
 if __name__ == "__main__":

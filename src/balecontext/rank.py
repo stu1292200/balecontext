@@ -24,6 +24,8 @@ TEST_WORDS = {"test", "tests", "testing", "spec", "specs"}
 GENERIC_ADJECTIVES = {"next", "previous", "first", "last", "new", "old", "same", "other", "current", "following", "original", "final"}
 DETERMINERS = {"the", "a", "an", "this", "that", "each", "every", "its", "their", "our", "your", "my"}
 DOC_WORDS = {"doc", "docs", "documentation", "guide", "readme"}
+# Words a question uses where code says something else ("choose the proxy" -> select_proxy).
+SYNONYMS = {"choose": ("select",), "chooses": ("select",), "chosen": ("select",), "pick": ("select",), "picks": ("select",)}
 CODE_EXTENSIONS = (".py", ".pyi", ".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx")
 DOC_EXTENSIONS = (".md", ".rst", ".txt", ".adoc", ".mdx")
 TOKEN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*(?:\(\))?")
@@ -143,10 +145,10 @@ def parse(query: str) -> Query:
         for word in words:
             if len(word) <= 2 or word in STOP:
                 continue
-            stemmed = stem(word)
-            if stemmed not in seen_words:
-                seen_words.add(stemmed)
-                result.words.append(stemmed)
+            for stemmed in (stem(word), *SYNONYMS.get(word, ())):
+                if stemmed not in seen_words:
+                    seen_words.add(stemmed)
+                    result.words.append(stemmed)
     return result
 
 

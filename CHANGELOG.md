@@ -79,6 +79,15 @@
 - The hook builds its symbol table about four times faster (each file path is split
   once; one compiled pattern splits identifiers), so a Django prompt waits about 2.3 s
   instead of 4.1 s for the same evidence.
+- Fewer extra steps after the hook's evidence. "Choose" and "pick" in a question also
+  match code named `select` (`select_proxy`). An entry that calls no project code and
+  is used in at most three places is shown with two of them, current code before code
+  marked deprecated. The hook no longer reserves room in its pack for the map it drops. A helper up to half again the line limit is shown whole instead of cut
+  a few lines short, and a saved file that would hold under 2,000 characters of source
+  is not written: the pack names those lines instead. Across the 31 gold questions the
+  hook writes 6 saved files instead of 10 (each one costs Claude a step to read), with
+  relevance unchanged on all four projects.
+- `benchmarks/claude_pair.py` writes `share.md` itself at the end of a test.
 - `benchmarks/share_results.py` bundles one paired test (summary, per-question figures,
   per-call usage, tool calls and answers) into a single `share.md`.
 - A call on `self` reaches a method inherited from a project base class (`self.render()` in
