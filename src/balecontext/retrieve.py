@@ -211,16 +211,25 @@ def _map_line(item: dict, role: str) -> str:
     return f"- {item['name']} ({item['kind']}) {item['path']}:{item['start']}-{item['end']} [{role}] id={item['id']}"
 
 
+def _with_nested(db, node_id: str) -> list[str]:
+    """A definition and the functions defined inside it, whose calls are its own: the `inner` a
+    decorator or wrapper returns (`convert_exception_to_response`) runs in its place."""
+    return [node_id] + [row[0] for row in db.execute(
+        "SELECT e.target FROM edges e JOIN nodes n ON n.id=e.target WHERE e.source=? AND e.relation='defines' AND n.kind='function'", (node_id,))]
+
+
 def _callees(db, node_id: str, path: str, cross: bool = False) -> list[dict]:
     """Definitions this one calls or uses, in call order; other files only when `cross` (never tests).
 
     Calling a class means running its constructor, so `Request(...)` yields `Request.__init__`;
     a class without one is left out (its header says little about what the call does).
     """
+    sources = _with_nested(db, node_id)
     rows = db.execute(
         "SELECT n.id,n.path,n.name,n.kind,n.start,n.end,e.line,e.relation,e.evidence FROM edges e JOIN nodes n ON n.id=e.target "
-        "WHERE e.source=? AND e.relation IN ('calls','uses') AND e.evidence != 'CANDIDATE' AND n.kind NOT IN ('file','chunk') "
-        + ("" if cross else "AND n.path=? ") + "ORDER BY e.line, n.start", (node_id,) if cross else (node_id, path))
+        f"WHERE e.source IN ({','.join('?' * len(sources))}) AND e.relation IN ('calls','uses') AND e.evidence != 'CANDIDATE' "
+        "AND n.kind NOT IN ('file','chunk') AND n.id NOT IN (" + ",".join("?" * len(sources)) + ") "
+        + ("" if cross else "AND n.path=? ") + "ORDER BY e.line, n.start", (*sources, *sources) if cross else (*sources, *sources, path))
     found = []
     for row in map(dict, rows):
         if cross and row["path"] != path and rank.path_class(row["path"]) != "code":
@@ -259,9 +268,11 @@ def _outward(db, item: dict) -> list[tuple[dict, str]]:
     `field._clean_bound_field(bf)` has CANDIDATE edges to every project method of that name;
     the first one is followed and the rest are named, so the answer can say which it read.
     """
+    sources = _with_nested(db, item["id"])
     rows = db.execute(
         "SELECT n.id,n.path,n.name,n.kind,n.start,n.end,e.line,e.evidence FROM edges e JOIN nodes n ON n.id=e.target "
-        "WHERE e.source=? AND e.relation='calls' AND n.kind NOT IN ('file','chunk','class') ORDER BY e.line, n.path, n.start", (item["id"],))
+        f"WHERE e.source IN ({','.join('?' * len(sources))}) AND e.relation='calls' AND n.kind NOT IN ('file','chunk','class') "
+        "ORDER BY e.line, n.path, n.start", sources)
     found: list[tuple[dict, str]] = []
     by_line: dict[int, list[dict]] = {}
     for row in map(dict, rows):
@@ -363,6 +374,88 @@ def _own_classes(db, item: dict) -> set[tuple[str, str]]:
                 "SELECT b.path, b.name FROM nodes c JOIN edges e ON e.source=c.id AND e.relation='inherits' JOIN nodes b ON b.id=e.target "
                 "WHERE c.path=? AND c.name=? AND c.kind='class' AND b.kind='class'", (path, name))]
     return found
+
+
+SETS_ATTRIBUTE = re.compile(r"^\s*(\w+)\.(\w+)\s*(?::[^=\n]*)?=(?!=)")
+
+
+def _own_methods(db, item: dict) -> list[dict]:
+    """The other methods of a method's class, in file order."""
+    owner = item["name"].rsplit(".", 1)[0]
+    rows = db.execute("SELECT id,path,name,kind,start,end FROM nodes WHERE path=? AND kind='method' AND substr(name, 1, ?)=? ORDER BY start",
+                      (item["path"], len(owner) + 1, owner + "."))
+    return [dict(row) for row in rows if row["id"] != item["id"] and "." not in row["name"][len(owner) + 1:]]
+
+
+def _state_readers(db, files: "_Files", item: dict) -> list[tuple[dict, str]]:
+    """Methods of the same class that read what this method sets and the constructor does not.
+
+    `BlockNode.render` sets `block.context` on the copy it renders, and `BlockNode.super` (what
+    `{{ block.super }}` runs) reads `self.context`: the two only make sense together.
+    """
+    if item["name"].endswith((".__init__", ".constructor")):
+        return []
+    lines = files.get(item["path"])
+    methods = _own_methods(db, item)
+    # Not the method's own definition (`res.send = function send`) or another method's.
+    names = {m["name"].rsplit(".", 1)[-1] for m in methods} | {item["name"].rsplit(".", 1)[-1]}
+    sets: dict[str, int] = {}
+    for number in range(item["start"] + 1, min(item["end"], len(lines)) + 1):
+        match = SETS_ATTRIBUTE.match(lines[number - 1])
+        if match and match.group(2) not in names:
+            sets.setdefault(match.group(2), number)
+    if not sets:
+        return []
+    init = next((m for m in methods if m["name"].endswith((".__init__", ".constructor"))), None)
+    if init:
+        body = "\n".join(lines[init["start"] - 1:init["end"]])
+        sets = {name: line for name, line in sets.items() if not re.search(rf"\b(?:self|this)\.{re.escape(name)}\s*(?::[^=\n]*)?=(?!=)", body)}
+    found = []
+    for method in methods:
+        if method is init or method["end"] - method["start"] >= 30:
+            continue
+        body = "\n".join(lines[method["start"] - 1:method["end"]])
+        read = [name for name in sets if re.search(rf"\b(?:self|this)\.{re.escape(name)}\b(?!\s*(?::[^=\n]*)?=(?!=))", body)]
+        if read:
+            found.append((method, f"reads self.{read[0]}, which {item['name']} sets at line {sets[read[0]]}"))
+    return found[:2]
+
+
+def _computing_constructor(db, files: "_Files", item: dict) -> tuple[dict, str] | None:
+    """A short constructor of the method's class that computes an attribute the method reads
+    (`ExtendsNode.__init__` collects `self.blocks`, which `ExtendsNode.render` adds to the block
+    context); one that only stores its arguments says nothing new."""
+    init = next((m for m in _own_methods(db, item) if m["name"].endswith((".__init__", ".constructor"))), None)
+    if not init or init["end"] - init["start"] >= 15:
+        return None
+    lines = files.get(item["path"])
+    reads = set(re.findall(r"\b(?:self|this)\.(\w+)", "\n".join(lines[item["start"] - 1:item["end"]])))
+    computed = [m.group(1) for m in (re.match(r"\s*(?:self|this)\.(\w+)\s*(?::[^=\n]*)?=(?!=)\s*(.+)", line) for line in lines[init["start"] - 1:init["end"]])
+                if m and m.group(1) in reads and not re.fullmatch(r"[\w$]+[;,]?", m.group(2).strip())]
+    if not computed:
+        return None
+    return init, f"constructor of {item['name'].rsplit('.', 1)[0]}; sets {', '.join(dict.fromkeys(computed))}, read by {item['name']}"
+
+
+def _callable_class(db, table, words: set[str], planned_ids: set[str]) -> tuple[dict, str] | None:
+    """The `__call__` of the one project base class a question word begins (`MiddlewareMixin`, base
+    of 19 middleware classes, for "the middleware chain"): what each object in such a chain runs
+    when it is called, though the objects are built from settings and no call names their class."""
+    found = []
+    words = sorted(w for w in words if len(w) >= 5)
+    code_classes = [(e, e.name.rsplit(".", 1)[-1]) for e in table.entries if e.kind == "class" and e.category == "code"] if words else []
+    for word in words:
+        classes = [e for e, leaf in code_classes if leaf.lower().startswith(word) and leaf[len(word):len(word) + 1] in ("", *"ABCDEFGHIJKLMNOPQRSTUVWXYZ")]
+        calls = []
+        for entry in classes:
+            row = db.execute("SELECT id,path,name,kind,start,end FROM nodes WHERE path=? AND name=? AND kind='method'", (entry.path, entry.name + ".__call__")).fetchone()
+            subclasses = db.execute("SELECT n.path FROM nodes c JOIN edges e ON e.target=c.id AND e.relation='inherits' JOIN nodes n ON n.id=e.source "
+                                    "WHERE c.path=? AND c.name=? AND c.kind='class'", (entry.path, entry.name)).fetchall() if row else []
+            if row and sum(rank.path_class(s["path"]) == "code" for s in subclasses) >= 3:
+                calls.append(dict(row))
+        if len(calls) == 1 and calls[0]["id"] not in planned_ids:
+            found.append((calls[0], f"matches {word}; runs when such an object is called"))
+    return found[0] if len(found) == 1 else None
 
 
 def _class_node(db, path: str, name: str):
@@ -630,9 +723,12 @@ def context(project: Project, query: str, budget: int = 3000, session: dict | No
                     callees.sort(key=priority)
                     for callee in callees:
                         if callee["id"] not in planned_ids:
-                            depth_of[callee["id"]] = depth_of.get(parent["id"], 0) + 1
+                            # The method that stores what the parent calls (`self._middleware_chain`) is
+                            # not a step of its own: what it builds runs at the parent's call.
+                            stored = bool(callee.get("assigned"))
+                            depth_of[callee["id"]] = depth_of.get(parent["id"], 0) + (0 if stored else 1)
                             plan(callee, _call_role(parent, callee))
-                            following.append(callee)
+                            (level if stored else following).append(callee)
                 level = following
 
         # When the entry is a class header ("How does a ModelForm ... is_valid()"), the first
@@ -663,6 +759,10 @@ def context(project: Project, query: str, budget: int = 3000, session: dict | No
                 if builder and builder["id"] not in planned_ids:
                     plan(builder, f"builds {entry.name.rsplit('.', 1)[0]} at line {builder['line']}")
                     builder_ids.add(builder["id"])
+        called = _callable_class(db, table, query_words, planned_ids) if seeds else None
+        if called:
+            plan(*called)
+            builder_ids.add(called[0]["id"])
         # Then the chain where it leaves this file: calls into other modules, calls on objects of
         # unknown type, and subclass overrides of the methods shown. Those near the entry or named
         # like the question are followed (shown if budget is left, else named in a PARTIAL verdict);
@@ -734,7 +834,7 @@ def context(project: Project, query: str, budget: int = 3000, session: dict | No
         for caller in _callers(db, seeds[0][1].id) if seeds and seeds[0][1].kind != "class" else []:
             if rank.path_class(caller["path"]) == "code" and all(caller["id"] != other["id"] for other in callers):
                 callers.append(caller)
-        if 0 < len(callers) <= 3 and not _callees(db, seeds[0][1].id, seeds[0][1].path, True):
+        if 0 < len(callers) <= 3 and not _callees(db, seeds[0][1].id, seeds[0][1].path, True) and len(_with_nested(db, seeds[0][1].id)) == 1:
             callers.sort(key=lambda c: "deprecat" in "\n".join(files.get(c["path"])[c["start"] - 1:c["start"] + 9]).lower())
             for caller in callers[:2]:
                 if caller["id"] not in planned_ids:
@@ -812,10 +912,16 @@ def context(project: Project, query: str, budget: int = 3000, session: dict | No
 
         listed_ids = {item["id"] for item, _ in planned}
         chain_path = {item["id"] for item in main_chain}
+        # What the question's own methods depend on in their class: the constructor that computes
+        # what they read, and the methods that read what they set. After everything the chain calls.
+        dependants: list[tuple[dict, str]] = []
         for item, role in planned:
             extended.append((item, role))
             if item["kind"] not in ("method", "function"):
                 continue
+            if item["kind"] == "method" and item["id"] in seed_ids:
+                constructor = _computing_constructor(db, files, item)
+                dependants += ([constructor] if constructor else []) + _state_readers(db, files, item)
             if templates_asked:
                 add_templates([(n, f"named by {item['name']}") for n in TEMPLATE_FILE.findall("\n".join(files.get(item["path"])[item["start"] - 1:item["end"]]))])
             stubs = [item] if "." in item["name"] and _abstract_lines(files.get(item["path"]), item) else []
@@ -840,6 +946,8 @@ def context(project: Project, query: str, budget: int = 3000, session: dict | No
                     add(method, f"implements {stub['name']} for {', '.join(classes[:3])}" + (f"; also implemented by {', '.join(others)}" if others else ""))
                     if templates_asked and used:
                         add_templates([(attributes[name], f"in {owner['name']}.{name}") for name in used if TEMPLATE_FILE.fullmatch(f'"{attributes[name]}"')], method["path"])
+        for method, why in dependants:
+            add(method, why)
         planned = extended
         map_lines =[_map_line(item, role) for item, role in planned + related_items]
         # The hook drops the map, so a focused pack keeps room only for the verdict lines.

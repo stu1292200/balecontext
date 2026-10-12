@@ -423,6 +423,75 @@ class ResolveTest(unittest.TestCase):
             self.assertIn(name, names)
         self.assertIn("sets self._chain, which Handler.handle calls at line 20", response["text"])
 
+    def test_calls_inside_a_returned_inner_function_and_past_a_stored_chain_are_followed(self):
+        temporary = tempfile.TemporaryDirectory(prefix="balecontext-inner-")
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        (root / "urls.py").write_text("def get_resolver(urlconf=None):\n    return _cached(urlconf)\n\n\ndef _cached(urlconf):\n    return urlconf\n", encoding="utf-8")
+        (root / "handler.py").write_text(
+            "from urls import get_resolver\n\n\n"
+            "def response_for(request, exc):\n    return str(exc)\n\n\n"
+            "def convert(get_response):\n    def inner(request):\n        try:\n            return get_response(request)\n"
+            "        except Exception as exc:\n            return response_for(request, exc)\n    return inner\n\n\n"
+            "class Handler:\n    def load_chain(self):\n        self._chain = convert(self._respond)\n\n"
+            "    def handle(self, request):\n        return self._chain(request)\n\n"
+            "    def _respond(self, request):\n        return self._dispatch(request)\n\n"
+            "    def _dispatch(self, request):\n        return self.resolve(request)\n\n"
+            "    def resolve(self, request):\n        return get_resolver().match(request)\n", encoding="utf-8")
+        response = context(Project(root), "How does Handler.handle run the chain?")
+        names = [source["name"] for source in response["sources"]]
+        self.assertEqual(names[0], "Handler.handle")
+        # What the returned `inner` calls is the wrapper's own call.
+        self.assertIn("response_for", names)
+        self.assertNotIn("convert.inner", names)
+        # The method that stores the chain is no step of its own, so the chain's calls stay near.
+        self.assertIn("get_resolver", names)
+
+    def test_a_method_brings_what_its_class_computes_for_it_and_reads_from_it(self):
+        temporary = tempfile.TemporaryDirectory(prefix="balecontext-state-")
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        (root / "loader_tags.py").write_text(
+            "class BlockNode:\n    def __init__(self, name, nodelist):\n        self.name = name\n        self.nodelist = nodelist\n\n"
+            "    def render(self, context):\n        block = type(self)(self.name, self.nodelist)\n        block.context = context\n"
+            "        context['block'] = block\n        return block.nodelist.render(context)\n\n"
+            "    def super(self):\n        if not hasattr(self, 'context'):\n            raise ValueError('no context')\n"
+            "        return self.context.get('parent', '')\n\n\n"
+            "class ExtendsNode:\n    def __init__(self, nodelist, parent_name):\n        self.nodelist = nodelist\n        self.parent_name = parent_name\n"
+            "        self.blocks = {n.name: n for n in nodelist}\n\n"
+            "    def render(self, context):\n        context.render_context['blocks'] = self.blocks\n        return self.nodelist.render(context)\n", encoding="utf-8")
+        response = context(Project(root), "How does the template engine render the extends and block tags?")
+        names = [source["name"] for source in response["sources"]]
+        self.assertIn("BlockNode.super", names)
+        self.assertIn("reads self.context, which BlockNode.render sets at line 8", response["text"])
+        self.assertIn("ExtendsNode.__init__", names)
+        self.assertIn("constructor of ExtendsNode; sets blocks, read by ExtendsNode.render", response["text"])
+        # A constructor that only stores its arguments says nothing new.
+        self.assertNotIn("BlockNode.__init__", names)
+
+    def test_the_base_class_a_question_word_begins_shows_what_calling_its_objects_runs(self):
+        temporary = tempfile.TemporaryDirectory(prefix="balecontext-callable-")
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        (root / "middleware.py").write_text(
+            "class MiddlewareMixin:\n    def __init__(self, get_response):\n        self.get_response = get_response\n\n"
+            "    def __call__(self, request):\n        response = self.process_request(request)\n"
+            "        response = response or self.get_response(request)\n        return self.process_response(request, response)\n\n\n"
+            + "".join(f"class {name}Middleware(MiddlewareMixin):\n    def process_request(self, request):\n        return None\n\n\n" for name in ("Security", "Session", "Common")), encoding="utf-8")
+        (root / "validators.py").write_text("class ChainValidator:\n    def __call__(self, value):\n        return value\n", encoding="utf-8")
+        (root / "handler.py").write_text(
+            "def import_string(path):\n    return path\n\n\n"
+            "class BaseHandler:\n    def load_middleware(self, paths):\n        handler = self._respond\n        for path in paths:\n"
+            "            middleware = import_string(path)\n            handler = middleware(handler)\n        self._middleware_chain = handler\n\n"
+            "    def get_response(self, request):\n        return self._middleware_chain(request)\n\n"
+            "    def _respond(self, request):\n        return request\n", encoding="utf-8")
+        response = context(Project(root), "How does BaseHandler.get_response run the middleware chain?")
+        names = [source["name"] for source in response["sources"]]
+        self.assertIn("MiddlewareMixin.__call__", names)
+        self.assertIn("matches middleware; runs when such an object is called", response["text"])
+        # A callable class no project class extends is not what the chain runs.
+        self.assertNotIn("ChainValidator.__call__", names)
+
     def test_tags_the_question_names_lead_and_calls_resolve_near_the_caller(self):
         temporary = tempfile.TemporaryDirectory(prefix="balecontext-tags-")
         self.addCleanup(temporary.cleanup)

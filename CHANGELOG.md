@@ -164,6 +164,21 @@
   too, since a part costs no extra step. In a local Claude Code replay, the hard Django
   question's pack and three parts (38,000 characters) all reach the first model request in
   full. The hook also exits without the interpreter's teardown, a third of a second sooner.
+- The evidence now covers what the answer check of the hard Django conversation found missing.
+  Calls inside a function's own inner function count as its calls (`convert_exception_to_response`
+  leads to `response_for_exception`, Express's `createApplication` to `app.handle`). The method that
+  stores a chain on `self` (`load_middleware` setting `_middleware_chain`) is no longer a step of
+  its own, so what the chain runs stays near the question. A method the question is about brings
+  the short constructor that computes what it reads (`ExtendsNode.__init__` collects `self.blocks`)
+  and the other methods of its class that read what it sets (`BlockNode.super` reads the `context`
+  that `BlockNode.render` sets; Hono's `#handleError` reads the handler `onError` stores). "The
+  middleware chain" brings `MiddlewareMixin.__call__`: the `__call__` of the one project base class,
+  with three or more subclasses, that a question word begins, which runs when each object in the
+  chain is called although no call names its class. These come after everything the chain calls.
+  The hard Django conversation's evidence grows from 79,239 to 82,992 characters and still fits in
+  the hook's five pieces; the requests and four-question Django conversations are unchanged. Of
+  the 34 gold questions, Hono's error handling shows 2 of 3 expected definitions instead of 1, four
+  other hook packs grow slightly, and none loses an expected definition.
 - `benchmarks/claude_pair.py` writes `share.md` itself at the end of a test.
 - `benchmarks/share_results.py` bundles one paired test (summary, per-question figures,
   per-call usage, tool calls and answers) into a single `share.md`.
