@@ -536,6 +536,42 @@ class HookTest(unittest.TestCase):
         self.assertIn("Client.target_url", names)
         self.assertNotIn("Client.connect", names)
 
+    def test_abstract_call_shows_the_implementations_that_run_and_their_templates(self):
+        (self.root / "render.py").write_text(
+            "class Renderable:\n"
+            "    def get_context(self):\n        raise NotImplementedError(\n            'subclasses provide get_context()'\n        )\n\n"
+            "    def render(self, template_name=None):\n        template = template_name or self.template_name\n"
+            "        return self.renderer.render(template, self.get_context())\n\n    __str__ = render\n\n\n"
+            "class RenderableError(Renderable):\n    def as_ul(self):\n        return self.render(self.template_name_ul)\n\n\n"
+            "class ErrorList(list, RenderableError):\n"
+            '    template_name = "app/errors/default.html"\n    template_name_ul = "app/errors/ul.html"\n\n'
+            "    def get_context(self):\n        return {'errors': self}\n\n\n"
+            "class Form(Renderable):\n    def get_context(self):\n        return {'form': self}\n\n"
+            "    @property\n    def errors(self):\n        return ErrorList()\n\n\n"
+            "class BoundField:\n    @property\n    def errors(self):\n        return self.form.errors.get(self.name, ErrorList())\n",
+            encoding="utf-8")
+        for name, body in {"default.html": '{% include "app/errors/ul.html" %}', "ul.html": "<ul>{% for e in errors %}<li>{{ e }}</li>{% endfor %}</ul>"}.items():
+            for root in ("templates", "jinja2"):
+                path = self.root / root / "app/errors" / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(body, encoding="utf-8")
+        response = context(Project(self.root), "How are a field's errors rendered in a template, for example {{ form.name.errors }} or form.errors.as_ul()?", 3000)
+        names = [source["name"] for source in response["sources"]]
+        paths = [source["path"] for source in response["sources"]]
+        # `self.get_context()` reached from RenderableError.as_ul runs ErrorList's, not Form's.
+        self.assertIn("ErrorList.get_context", names)
+        self.assertNotIn("Form.get_context", names)
+        self.assertNotIn("Renderable.get_context", names)
+        # Its class header sets the template names the shown code reads; the templates follow.
+        self.assertIn("ErrorList", names)
+        self.assertIn("templates/app/errors/ul.html", paths)
+        self.assertIn("templates/app/errors/default.html", paths)
+        self.assertNotIn("jinja2/app/errors/ul.html", paths)
+        # "a field's errors" is BoundField.errors as well as Form.errors.
+        self.assertIn("BoundField.errors", names)
+        self.assertIn("__str__ = render", response["text"])
+        self.assertNotIn("Renderable.get_context", response["text"].split("COVERAGE")[-1])
+
     def test_installer_adds_the_hook_once_and_keeps_other_settings(self):
         import json
         from balecontext.integrations import install

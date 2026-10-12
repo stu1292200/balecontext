@@ -87,6 +87,19 @@
   is not written: the pack names those lines instead. Across the 31 gold questions the
   hook writes 6 saved files instead of 10 (each one costs Claude a step to read), with
   relevance unchanged on all four projects.
+- An abstract method (one that raises NotImplementedError) is followed to the methods
+  that run in its place: those of subclasses of the most derived class on the shown path
+  (`self.get_context()` reached from the errors mixin shows `ErrorList.get_context` and
+  `ErrorDict.get_context`, not the form's), each found through its class's bases in order
+  (`DjangoTemplates` gets `get_template` from `EngineMixin`). A class header that sets
+  attributes the shown code reads (`template_name_ul`) comes before its method, and for a
+  question about templates or rendering, the small template files named there follow,
+  with the files they include (the `templates` copy before a `jinja2` one). Aliases
+  right after a method (`__str__ = render`) are shown with it. "A field's errors" adds
+  `BoundField.errors` beside `BaseForm.errors`. Source sent for an earlier question is
+  no longer listed as missing. Django's error-rendering follow-up now carries everything
+  its answer cited in 5,500 characters, with no saved file; the 31 gold questions and
+  relevance are unchanged.
 - `benchmarks/claude_pair.py` writes `share.md` itself at the end of a test.
 - `benchmarks/share_results.py` bundles one paired test (summary, per-question figures,
   per-call usage, tool calls and answers) into a single `share.md`.

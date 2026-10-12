@@ -92,6 +92,8 @@ class Query:
     wants_docs: bool = False
     wants_types: bool = False
     prose_words: set[str] = field(default_factory=set)
+    # "a field's errors", "the errors of a field": (owner, thing), both stemmed.
+    possessives: set[tuple[str, str]] = field(default_factory=set)
 
     def describe(self) -> str:
         names = ", ".join(i.text for i in self.identifiers) or "none"
@@ -115,6 +117,8 @@ def parse(query: str) -> Query:
     result.wants_tests = bool(lowered & TEST_WORDS)
     result.wants_docs = bool(lowered & DOC_WORDS)
     result.wants_types = bool(lowered & {"type", "types", "interface", "interfaces", "typing"})
+    result.possessives = {(stem(owner), stem(thing)) for owner, thing in re.findall(r"\b([A-Za-z]+)['\u2019]s\s+([A-Za-z]+)", query)}
+    result.possessives |= {(stem(owner), stem(thing)) for thing, owner in re.findall(r"\b([A-Za-z]+)\s+of\s+(?:a|an|the|each|every)\s+([A-Za-z]+)", query)}
     tokens = [match.group(0) for match in TOKEN.finditer(query)]
     for position, token in enumerate(tokens):
         previous = tokens[position - 1].lower() if position else ""
@@ -325,11 +329,20 @@ def pick_seeds(query: Query, ranked: list[tuple[float, Entry, set[str]]], limit:
     top = ranked[0][0]
     leaves = {item[1].leaf for item in seeds}
     extras = 0
+    owners = lambda entry: entry.name_tokens - entry.leaf_tokens
     for item in ranked:
         if extras >= limit or item[0] < top * 0.2:
             break
-        if item[1].id in used_ids or item[1].leaf in leaves:
+        if item[1].id in used_ids:
             continue
+        if item[1].leaf in leaves:
+            # Same-named members share a slot, unless the question says whose this one is and the
+            # others are not: "a field's errors ... {{ form.email.errors }}" is BoundField.errors as
+            # well as BaseForm.errors, though `form.` matches BaseForm's name better.
+            same = [other for other in seeds if other[1].leaf == item[1].leaf]
+            taken = set().union(*(owners(other[1]) for other in same))
+            if item[1].category != "code" or not any(owner in owners(item[1]) - taken and thing in item[1].leaf_tokens for owner, thing in query.possessives):
+                continue
         seeds.append(item)
         used_ids.add(item[1].id)
         leaves.add(item[1].leaf)

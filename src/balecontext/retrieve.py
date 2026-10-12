@@ -5,6 +5,7 @@ import ast
 import hashlib
 import json
 import math
+import os
 import re
 from collections import deque
 
@@ -163,6 +164,13 @@ def _render_body(files: _Files, item: dict, max_lines: int) -> tuple[list[tuple[
             kept[index] = (first[0], first[1].rstrip() + f"  [docstring lines {doc[0] + 1}-{doc[1]} not shown]")
         numbered = kept
     numbered = _collapse_parameters(numbered)
+    # Aliases set right after a method (`__str__ = render`) say how else it runs.
+    leaf = item["name"].rsplit(".", 1)[-1]
+    for n in range(end + 1, min(end + 6, len(lines)) + 1):
+        if re.fullmatch(rf"\s+\w+\s*=\s*{re.escape(leaf)}\s*", lines[n - 1]) and item["kind"] == "method":
+            numbered.append((n, lines[n - 1]))
+        elif lines[n - 1].strip():
+            break
     complete = True
     # A body up to half again the limit is shown whole: cutting it would hide only a few lines
     # but cost the reader another step to fetch them.
@@ -257,15 +265,34 @@ def _outward(db, item: dict) -> list[tuple[dict, str]]:
 def _stub(db, item: dict) -> bool:
     """A method whose body, without its docstring and comments, is only pass, ..., return or raise NotImplementedError."""
     row = db.execute("SELECT content FROM files WHERE path=?", (item["path"],)).fetchone()
-    if not row:
-        return False
-    lines = row[0].splitlines()[item["start"] - 1:item["end"]]
+    return bool(row) and _stub_lines(row[0].splitlines(), item)
+
+
+def _stub_lines(lines: list[str], item: dict) -> bool:
+    lines = lines[item["start"] - 1:item["end"]]
     # Skip a multi-line signature: the body starts after the first line ending the header.
     header = next((i for i, line in enumerate(lines[:30]) if line.rstrip().endswith((":", "{"))), 0)
     body = "\n".join(lines[header + 1:])
     body = re.sub(r'(?s)("""|\'\'\').*?\1', "", body)
     lines = [line.strip() for line in body.splitlines() if line.strip() and not line.strip().startswith(("#", "//", "@"))]
+    if lines and re.match(r"raise NotImplementedError\(|throw new Error\(", lines[0]):
+        # A raise whose message continues on the next lines is still one statement.
+        depth = 0
+        for end, line in enumerate(lines):
+            depth += line.count("(") - line.count(")")
+            if depth <= 0:
+                break
+        lines = [" ".join(lines[:end + 1])] + lines[end + 1:]
     return len(lines) <= 1 and all(re.fullmatch(r"pass|\.\.\.|return( None)?|raise NotImplementedError.*|throw new Error.*|\}", line) for line in lines)
+
+
+def _abstract_lines(lines: list[str], item: dict) -> bool:
+    """A stub that subclasses must replace: it raises NotImplementedError or is marked abstract.
+
+    A stub that only passes is an optional hook (BaseForm._post_clean); its overrides are extras.
+    """
+    body = "\n".join(lines[item["start"] - 1:item["end"]])
+    return _stub_lines(lines, item) and bool(re.search(r"raise NotImplementedError|throw new Error|@abstractmethod|\babstract\b", body))
 
 
 def _base_of_others(db, item: dict, rows: list[dict]) -> bool:
@@ -296,6 +323,105 @@ def _overrides(db, item: dict) -> list[tuple[dict, str]]:
         if method:
             found.append((dict(method), f"overrides {item['name']} in subclass {row['name']}"))
     return found
+
+
+def _class_node(db, path: str, name: str):
+    return db.execute("SELECT id,path,name,kind,start,end FROM nodes WHERE path=? AND name=? AND kind='class'", (path, name)).fetchone()
+
+
+def _implementations(db, files: _Files, stub: dict, planned: list[dict]) -> list[tuple[dict, list[str]]]:
+    """Methods that run in place of an abstract one, with the classes that get each.
+
+    `self` belongs to the most derived class on the shown path that reaches the stub:
+    RenderableErrorMixin.as_ul -> RenderableMixin.render -> self.get_context() runs only the
+    get_context of RenderableErrorMixin's subclasses (ErrorDict, ErrorList), not BaseForm's.
+    Each subclass gets the method from its bases in order, so DjangoTemplates(EngineMixin,
+    BaseRenderer) runs EngineMixin.get_template.
+    """
+    owner, leaf = stub["name"].rsplit(".", 1)
+    base = _class_node(db, stub["path"], owner)
+    if base is None:
+        return []
+    key = lambda row: (row["path"], row["name"])
+    nodes = {key(base): dict(base)}
+    ancestors: dict[tuple[str, str], set] = {key(base): set()}
+    queue = deque([dict(base)])
+    while queue and len(nodes) < 80:
+        parent = queue.popleft()
+        for row in db.execute("SELECT s.id,s.path,s.name,s.kind,s.start,s.end FROM edges e JOIN nodes s ON s.id=e.source "
+                              "WHERE e.target=? AND e.relation='inherits' AND s.kind='class'", (parent["id"],)):
+            if rank.path_class(row["path"]) != "code":
+                continue
+            ancestors.setdefault(key(row), set()).update(ancestors[key(parent)] | {key(parent)})
+            if key(row) not in nodes:
+                nodes[key(row)] = dict(row)
+                queue.append(dict(row))
+    within = lambda cls, top: cls == top or top in ancestors.get(cls, ())
+    start = key(base)
+    current, seen = stub, set()
+    while len(seen) < 8:
+        seen.add(current["id"])
+        callers = [row["source"] for row in db.execute("SELECT source FROM edges WHERE target=? AND relation='calls'", (current["id"],))]
+        step = next((item for item in planned if item["id"] in callers and item["id"] not in seen and "." in item["name"]
+                     and within((item["path"], item["name"].rsplit(".", 1)[0]), start)), None)
+        if step is None:
+            break
+        start = (step["path"], step["name"].rsplit(".", 1)[0])
+        current = step
+
+    def bases(cls: dict) -> list[dict]:
+        header = " ".join(files.get(cls["path"])[cls["start"] - 1:cls["start"] + 2])
+        rows = [dict(r) for r in db.execute("SELECT b.id,b.path,b.name,b.kind,b.start,b.end FROM edges e JOIN nodes b ON b.id=e.target "
+                                            "WHERE e.source=? AND e.relation='inherits' AND b.kind='class'", (cls["id"],))]
+        position = lambda r: header.find(r["name"].rsplit(".", 1)[-1])
+        return sorted(rows, key=lambda r: (position(r) < 0, position(r), r["name"]))
+
+    def resolve(cls: dict, depth: int = 0) -> dict | None:
+        method = db.execute("SELECT id,path,name,kind,start,end FROM nodes WHERE path=? AND name=? AND kind='method'", (cls["path"], cls["name"] + "." + leaf)).fetchone()
+        if method:
+            return dict(method)
+        for parent in bases(cls) if depth < 6 else []:
+            found = resolve(parent, depth + 1)
+            if found:
+                return found
+        return None
+
+    found: dict[str, tuple[dict, list[str]]] = {}
+    for cls_key, cls in nodes.items():
+        if not within(cls_key, start):
+            continue
+        method = resolve(cls)
+        if method is None or method["id"] == stub["id"] or rank.path_class(method["path"]) != "code" or _stub_lines(files.get(method["path"]), method):
+            continue
+        found.setdefault(method["id"], (method, []))[1].append(cls["name"])
+    return sorted(found.values(), key=lambda pair: (-len(pair[1]), pair[0]["path"], pair[0]["start"]))
+
+
+def _header_attributes(files: _Files, cls: dict) -> dict[str, str]:
+    """Attributes a class header assigns, with the string each is set to ('' when not a string)."""
+    lines = files.get(cls["path"])
+    children = [r["start"] for r in files.db.execute("SELECT start FROM nodes WHERE path=? AND kind='method' AND start>? AND end<=? ORDER BY start LIMIT 1", (cls["path"], cls["start"], cls["end"]))]
+    found = {}
+    for line in lines[cls["start"]:min(children[0] - 1 if children else cls["end"], cls["start"] + 25)]:
+        match = re.match(r"\s+(\w+)\s*(?::[^=]*)?=(?!=)\s*(?:[\"']([^\"']*)[\"'])?", line)
+        if match:
+            found[match.group(1)] = match.group(2) or ""
+    return found
+
+
+TEMPLATE_FILE = re.compile(r"[\"']([\w./-]+\.(?:html?|txt|xml|jinja2?|j2|hbs|handlebars|mustache|ejs|pug|njk|liquid|twig|tpl|erb))[\"']")
+TEMPLATE_SIZE = 1500
+
+
+def _template(db, name: str, near: str = "") -> dict | None:
+    """The project file a template name refers to: under a `templates` folder, or beside `near`."""
+    rows = [row for row in db.execute("SELECT f.path, length(f.content) size, n.id, n.end FROM files f JOIN nodes n ON n.path=f.path AND n.kind='file' "
+                                      "WHERE f.path=? OR f.path LIKE ?", (name, "%/" + name)) if row["path"] == name or row["path"].endswith("/" + name)]
+    rows = [row for row in rows if rank.path_class(row["path"]) != "test" and row["size"] <= TEMPLATE_SIZE]
+    if not rows:
+        return None
+    row = min(rows, key=lambda r: (-len(os.path.commonprefix([r["path"], near])), "templates" not in r["path"].split("/"), len(r["path"])))
+    return {"id": row["id"], "path": row["path"], "name": row["path"].rsplit("/", 1)[-1], "kind": "file", "start": 1, "end": max(1, row["end"])}
 
 
 def _callers(db, node_id: str) -> list[dict]:
@@ -570,7 +696,64 @@ def context(project: Project, query: str, budget: int = 3000, session: dict | No
             keep = [pair for position, pair in enumerate(planned) if position == 0 or pair[0]["id"] in near_entry or asked_about(pair[0])]
             elsewhere = [pair for pair in planned if pair not in keep] + elsewhere
             planned = keep
-        map_lines = [_map_line(item, role) for item, role in planned + related_items]
+        # An abstract method shows nothing of what runs, so the methods that run in its place follow
+        # the code that reaches it, each after its class header when that header sets attributes the
+        # shown code reads (`template_name_ul`). For a question about templates or rendering, the
+        # small template files those attributes or the shown code name follow too, with the files
+        # they include.
+        covered: set[str] = set()
+        shown_code = [item for item, _ in planned if item["kind"] in ("method", "function")]
+        reads = {name for item in shown_code for name in re.findall(r"\b(?:self|this)\.(\w+)", "\n".join(files.get(item["path"])[item["start"] - 1:item["end"]]))}
+        templates_asked = bool(query_words & {"template", "render", "html"})
+        extended: list[tuple[dict, str]] = []
+
+        def add(item: dict, role: str) -> None:
+            if item["id"] not in planned_ids:
+                planned_ids.add(item["id"])
+                main_ids.add(item["id"])
+                extended.append((item, role))
+
+        def add_templates(names: list[tuple[str, str]], near: str = "", depth: int = 0) -> None:
+            for name, named_by in names:
+                template = _template(db, name, near)
+                if template and template["id"] not in planned_ids and sum(i["kind"] == "file" for i, _ in extended) < 4:
+                    add(template, f"template {named_by}")
+                    content = "\n".join(files.get(template["path"]))
+                    if depth == 0:
+                        add_templates([(n, f"included by {template['name']}") for n in TEMPLATE_FILE.findall(content)], template["path"], 1)
+
+        listed_ids = {item["id"] for item, _ in planned}
+        chain_path = {item["id"] for item in main_chain}
+        for item, role in planned:
+            extended.append((item, role))
+            if item["kind"] not in ("method", "function"):
+                continue
+            if templates_asked:
+                add_templates([(n, f"named by {item['name']}") for n in TEMPLATE_FILE.findall("\n".join(files.get(item["path"])[item["start"] - 1:item["end"]]))])
+            stubs = [item] if "." in item["name"] and _abstract_lines(files.get(item["path"]), item) else []
+            # A stub that is itself listed is handled where it appears, so it comes before its implementations.
+            stubs += [c for c in _callees(db, item["id"], item["path"], True) if c["kind"] == "method" and c["id"] not in listed_ids and _abstract_lines(files.get(c["path"]), c)]
+            for stub in stubs:
+                # Only on the entry's own path or where the question names it: an abstract helper of
+                # an override followed elsewhere (BaseTemporalField.strptime) is a detail.
+                if not (item["id"] in chain_path or named_like_question(stub)):
+                    continue
+                found = [] if stub["id"] in covered else _implementations(db, files, stub, shown_code)
+                if not found or len(found) > 4:
+                    continue
+                covered.add(stub["id"])
+                for method, classes in found[:3]:
+                    owner = _class_node(db, method["path"], method["name"].rsplit(".", 1)[0])
+                    attributes = _header_attributes(files, dict(owner)) if owner else {}
+                    used = sorted(set(attributes) & reads)
+                    if used:
+                        add(dict(owner), f"class of {method['name']}; sets {', '.join(used)}")
+                    others = [m["name"] for m, _ in found[3:]]
+                    add(method, f"implements {stub['name']} for {', '.join(classes[:3])}" + (f"; also implemented by {', '.join(others)}" if others else ""))
+                    if templates_asked and used:
+                        add_templates([(attributes[name], f"in {owner['name']}.{name}") for name in used if TEMPLATE_FILE.fullmatch(f'"{attributes[name]}"')], method["path"])
+        planned = extended
+        map_lines =[_map_line(item, role) for item, role in planned + related_items]
         # The hook drops the map, so a focused pack keeps room only for the verdict lines.
         footer_reserve = 250 if focus else min(120 + estimate("\n".join(map_lines[:20])), limit // 4)
         # Helpers are first shown up to HELPER_BODY lines; if that leaves budget unused,
@@ -646,9 +829,12 @@ def context(project: Project, query: str, budget: int = 3000, session: dict | No
             if shown_item["id"] not in chain_ids:
                 continue
             for callee in _callees(db, shown_item["id"], shown_item["path"]):
-                if callee["id"] not in shown_ids and not any(a <= callee["start"] and callee["end"] <= b for a, b in occupied.get(callee["path"], [])):
+                # An abstract method whose implementations are shown needs no reading of its own.
+                if callee["id"] not in shown_ids and callee["id"] not in covered and not any(a <= callee["start"] and callee["end"] <= b for a, b in occupied.get(callee["path"], [])):
                     not_included.append((callee, f"called by {shown_item['name']} at line {callee['line']}"))
-        not_included = list({item["id"]: (item, role) for item, role in not_included}.values())
+        # Source sent for an earlier question is still in the conversation, so it is not missing.
+        not_included = list({item["id"]: (item, role) for item, role in not_included
+                             if not any(a <= item["start"] and item["end"] <= b for a, b in session_sent.get(item["path"], []))}.values())
         unfollowed: list[str] = []
         for shown_item in used:
             for row in db.execute("SELECT target FROM edges WHERE source=? AND evidence='UNRESOLVED' ORDER BY line", (shown_item["id"],)):
