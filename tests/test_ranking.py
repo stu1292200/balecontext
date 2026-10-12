@@ -171,6 +171,13 @@ class RankingTest(unittest.TestCase):
         self.assertNotIn("session", rank.parse("How are cookies saved on the Session?").prose_words)
         self.assertIn("compose", rank.parse("How does the compose function run middleware?").prose_words)
 
+    def test_words_of_one_family_share_a_long_stem(self):
+        # "URL resolution" names URLResolver.resolve; a short shared start ("req", "form") does not count.
+        self.assertTrue(rank.same_family(rank.stem("resolution"), rank.stem("resolve")))
+        self.assertTrue(rank.same_family(rank.stem("validators"), rank.stem("valid")))
+        self.assertFalse(rank.same_family(rank.stem("request"), rank.stem("require")))
+        self.assertFalse(rank.same_family(rank.stem("format"), rank.stem("form")))
+
     def test_a_call_on_self_reaches_a_method_inherited_from_a_base_class(self):
         (self.root / "widgets").mkdir()
         (self.root / "widgets/utils.py").write_text(
@@ -485,6 +492,40 @@ class ResolveTest(unittest.TestCase):
         # The path to handle() (run_from_argv, execute) before what migrate's own handle() calls.
         self.assertLess(order.index("BaseCommand.run_from_argv"), order.index("emit_pre_migrate_signal"))
         self.assertLess(order.index("BaseCommand.execute"), order.index("MigrationExecutor.migrate"))
+
+    def test_a_question_in_words_shows_where_its_objects_are_built(self):
+        temporary = tempfile.TemporaryDirectory(prefix="balecontext-tags-")
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        (root / "template").mkdir()
+        (root / "template" / "loader_tags.py").write_text(
+            "class BlockContext:\n    def __init__(self):\n        self.blocks = {}\n\n"
+            "    def add_blocks(self, blocks):\n        self.blocks.update(blocks)\n\n"
+            "    def pop(self, name):\n        return self.blocks.pop(name, None)\n\n"
+            "    def push(self, name, block):\n        self.blocks[name] = block\n\n\n"
+            "class BlockNode:\n    def __init__(self, name, nodelist):\n        self.name = name\n        self.nodelist = nodelist\n\n"
+            "    def render(self, context):\n        block_context = context.render_context.get('block_context')\n"
+            "        block = block_context.pop(self.name)\n        result = block.nodelist.render(context)\n"
+            "        block_context.push(self.name, block)\n        return result\n\n\n"
+            "class ExtendsNode:\n    def __init__(self, nodelist, parent_name):\n        self.nodelist = nodelist\n        self.parent_name = parent_name\n\n"
+            "    def render(self, context):\n        block_context = BlockContext()\n        block_context.add_blocks(self.nodelist)\n"
+            "        return context.template.engine.find_template(self.parent_name).render(context)\n\n\n"
+            "def do_block(parser, token):\n    nodelist = parser.parse(('endblock',))\n    return BlockNode(token, nodelist)\n\n\n"
+            "def do_extends(parser, token):\n    nodelist = parser.parse()\n    return ExtendsNode(nodelist, token)\n", encoding="utf-8")
+        (root / "template" / "base.py").write_text(
+            "class NodeList(list):\n    def render(self, context):\n        return ''.join(node.render(context) for node in self)\n\n\n"
+            "class Parser:\n    def parse(self, until=()):\n        return NodeList()\n", encoding="utf-8")
+        (root / "template" / "context.py").write_text("class RenderContext:\n    def get(self, key):\n        return None\n", encoding="utf-8")
+        response = context(Project(root), "How does the template engine render the extends and block tags?", 1500, focus=True)
+        roles = {item["name"]: item["role"] for item in response["map"]}
+        order = [item["name"] for item in response["map"]]
+        # do_block parses the block tag into the BlockNode whose render() matched the question.
+        self.assertEqual(roles.get("do_block"), "builds BlockNode at line 41")
+        # The block context's own methods, beside the entry, before a call into another module.
+        self.assertLess(order.index("BlockContext.pop"), order.index("RenderContext.get"))
+        # A question naming the definition asks about it, not about where its object is made.
+        named = context(Project(root), "How does BlockNode.render work?", 1500, focus=True)
+        self.assertFalse([item for item in named["map"] if item["role"].startswith("builds")])
 
     def test_entry_is_the_outermost_matching_function(self):
         temporary = tempfile.TemporaryDirectory(prefix="balecontext-root-")

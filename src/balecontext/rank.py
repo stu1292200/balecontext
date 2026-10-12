@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import math
+import os
 import re
 from dataclasses import dataclass, field
 from functools import lru_cache
@@ -51,6 +52,15 @@ def stem(word: str) -> str:
     if len(word) > 3 and word.endswith("s") and not word.endswith(("ss", "us", "is")):
         return word[:-1]
     return word
+
+
+def same_family(a: str, b: str) -> bool:
+    """Stems of one word family: "resolution" and "resolve", "execution" and "execute" share a
+    stem of five or more letters covering most of the shorter word ("construct" and "constraint" do not)."""
+    if a == b:
+        return True
+    shared = len(os.path.commonprefix([a, b]))
+    return shared >= 5 and shared >= 0.7 * min(len(a), len(b))
 
 
 IDENTIFIER_PART = re.compile(r"[A-Z]+(?=[A-Z][a-z])|[A-Z]?[a-z]+|[A-Z]+|[0-9]+")

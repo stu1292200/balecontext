@@ -143,6 +143,16 @@
   handle()" follows `run_from_argv` and `BaseCommand.execute` before migrate's internals (index
   schema 11). The 31 gold questions, relevance and both paid-test conversations are unchanged
   apart from order.
+- A question asked in words shows where its object is built when one function in the project's
+  code builds it: "render the extends and block tags" now includes `do_extends` and `do_block`,
+  which parse each tag into its node, and "How is HTTP basic auth added to a request?" includes
+  `PreparedRequest.prepare_auth`. A question that names its definition (`Response.json()`) gets
+  no builder. Among calls the question does not name, calls into the entry's own module come
+  first (`block_context.pop` beside `BlockNode.render`), and words sharing a long stem count as
+  named ("URL resolution" names `URLResolver.resolve`). `benchmarks/relevance/django.json` gains
+  three harder multi-file questions (request handling, management commands, extends and block
+  tags); the hook shows every expected definition for all three. Of the 31 earlier gold questions
+  only basic auth changes (+1,256 characters, still COMPLETE).
 - `benchmarks/claude_pair.py` writes `share.md` itself at the end of a test.
 - `benchmarks/share_results.py` bundles one paired test (summary, per-question figures,
   per-call usage, tool calls and answers) into a single `share.md`.

@@ -1,7 +1,7 @@
 {
   "repository": "https://github.com/django/django.git",
   "commit": "0f34a4c",
-  "note": "Gold lists name the definitions a correct, complete answer must cite. Written from the source before tuning ranking. form-is-valid-prose gained add_error, Field._clean_bound_field, Field.clean, Field.run_validators and BaseModelForm._post_clean after a real Claude Code run showed a correct answer needs them; the earlier code showed 64% of that list and wrongly called itself COMPLETE.",
+  "note": "Gold lists name the definitions a correct, complete answer must cite. Written from the source before tuning ranking. form-is-valid-prose gained add_error, Field._clean_bound_field, Field.clean, Field.run_validators and BaseModelForm._post_clean after a real Claude Code run showed a correct answer needs them; the earlier code showed 64% of that list and wrongly called itself COMPLETE. request-handling, management-command and extends-block-tags were added later, from gold lists written while studying where harder multi-file questions cost more than a plain agent; do_extends and do_block are in extends-block-tags because a complete answer explains how each tag is parsed into its node.",
   "questions": [
     {
       "id": "form-is-valid-prose",
@@ -113,6 +113,48 @@
       "gold": [
         {"name": "get_object_or_404", "path": "django/shortcuts.py"},
         {"name": "_get_queryset", "path": "django/shortcuts.py"}
+      ]
+    },
+    {
+      "id": "request-handling",
+      "query": "Trace how Django handles an HTTP request from WSGIHandler.__call__ through the middleware chain and URL resolution to the view, and back to the response. Cite the relevant source files and line numbers. Do not modify any files.",
+      "entry": {"name": "WSGIHandler.__call__", "path": "django/core/handlers/wsgi.py"},
+      "gold": [
+        {"name": "WSGIHandler.__call__", "path": "django/core/handlers/wsgi.py"},
+        {"name": "BaseHandler.get_response", "path": "django/core/handlers/base.py"},
+        {"name": "BaseHandler.load_middleware", "path": "django/core/handlers/base.py"},
+        {"name": "BaseHandler._get_response", "path": "django/core/handlers/base.py"},
+        {"name": "BaseHandler.resolve_request", "path": "django/core/handlers/base.py"},
+        {"name": "convert_exception_to_response", "path": "django/core/handlers/exception.py"},
+        {"name": "URLResolver.resolve", "path": "django/urls/resolvers.py"}
+      ]
+    },
+    {
+      "id": "management-command",
+      "query": "How does Django run a management command such as migrate, from execute_from_command_line to the command's handle() method? Cite the relevant source files and line numbers. Do not modify any files.",
+      "entry": {"name": "execute_from_command_line", "path": "django/core/management/__init__.py"},
+      "gold": [
+        {"name": "execute_from_command_line", "path": "django/core/management/__init__.py"},
+        {"name": "ManagementUtility.execute", "path": "django/core/management/__init__.py"},
+        {"name": "ManagementUtility.fetch_command", "path": "django/core/management/__init__.py"},
+        {"name": "load_command_class", "path": "django/core/management/__init__.py"},
+        {"name": "BaseCommand.run_from_argv", "path": "django/core/management/base.py"},
+        {"name": "BaseCommand.execute", "path": "django/core/management/base.py"},
+        {"name": "Command.handle", "path": "django/core/management/commands/migrate.py"}
+      ]
+    },
+    {
+      "id": "extends-block-tags",
+      "query": "How does Django's template engine render the extends and block tags? Cite the relevant source files and line numbers. Do not modify any files.",
+      "entry": {"name": "ExtendsNode.render", "path": "django/template/loader_tags.py"},
+      "gold": [
+        {"name": "ExtendsNode.render", "path": "django/template/loader_tags.py"},
+        {"name": "ExtendsNode.get_parent", "path": "django/template/loader_tags.py"},
+        {"name": "BlockNode.render", "path": "django/template/loader_tags.py"},
+        {"name": "BlockContext.add_blocks", "path": "django/template/loader_tags.py"},
+        {"name": "BlockContext.pop", "path": "django/template/loader_tags.py"},
+        {"name": "do_extends", "path": "django/template/loader_tags.py"},
+        {"name": "do_block", "path": "django/template/loader_tags.py"}
       ]
     }
   ]

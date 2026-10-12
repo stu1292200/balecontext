@@ -471,6 +471,23 @@ def _callers(db, node_id: str) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def _builder(db, item: dict) -> dict | None:
+    """The one function in project code that constructs a method's class (`do_extends` builds ExtendsNode).
+
+    The object a question asks about gets its parts where it is built, so that place belongs in the
+    answer; a class built in several places has no single such place.
+    """
+    owner = item["name"].rsplit(".", 1)[0] if item["kind"] == "method" else ""
+    row = db.execute("SELECT id FROM nodes WHERE path=? AND name=? AND kind='class'", (item["path"], owner)).fetchone() if owner else None
+    if not row:
+        return None
+    rows = db.execute(
+        "SELECT n.id,n.path,n.name,n.kind,n.start,n.end,MIN(e.line) AS line FROM edges e JOIN nodes n ON n.id=e.source "
+        "WHERE e.target=? AND e.relation='calls' AND e.evidence='INFERRED' AND n.kind IN ('function','method') GROUP BY n.id", (row["id"],))
+    builders = [dict(r) for r in rows if rank.path_class(r["path"]) == "code"]
+    return builders[0] if len(builders) == 1 else None
+
+
 def _closure(db, node_id: str, path: str, depth: int = 4) -> set[str]:
     """Ids reachable from a definition through same-file calls and attribute uses."""
     seen: set[str] = set()
@@ -636,13 +653,23 @@ def context(project: Project, query: str, budget: int = 3000, session: dict | No
                 lead_ids |= planned_ids - before
             else:
                 seed_helper_ids |= planned_ids - before - {entry.id}
+        # Where the entry's object is built, and the objects of matches beside it: "render the extends
+        # and block tags" needs do_extends and do_block, which parse each tag into its node. A question
+        # naming the entry (`Response.json()`) asks about that definition, not where its object is made.
+        builder_ids: set[str] = set()
+        for position, (_, entry, _) in enumerate(seeds if seeds and not seeds[0][2] else []):
+            if position == 0 or entry.path == seeds[0][1].path:
+                builder = _builder(db, {"path": entry.path, "name": entry.name, "kind": entry.kind})
+                if builder and builder["id"] not in planned_ids:
+                    plan(builder, f"builds {entry.name.rsplit('.', 1)[0]} at line {builder['line']}")
+                    builder_ids.add(builder["id"])
         # Then the chain where it leaves this file: calls into other modules, calls on objects of
         # unknown type, and subclass overrides of the methods shown. Those near the entry or named
         # like the question are followed (shown if budget is left, else named in a PARTIAL verdict);
         # the rest are only listed as not followed, so the pack never hides that they exist.
         elsewhere: list[tuple[dict, str]] = []
         aside: list[tuple[dict, str]] = []
-        main_chain = [item for item, _ in planned if item["kind"] != "class"]
+        main_chain = [item for item, _ in planned if item["kind"] != "class" and item["id"] not in builder_ids]
         # The entry's own chain is shown at full length before anything followed outside it.
         main_ids = {item["id"] for item in main_chain[:12]}
         # Calls made at most three steps from the entry are on its path; deeper ones count only
@@ -650,11 +677,15 @@ def context(project: Project, query: str, budget: int = 3000, session: dict | No
         near = {item["id"] for item in main_chain if depth_of.get(item["id"], 0) <= 3}
         reach = [(source, pair) for source in main_chain for pair in _outward(db, source) + _overrides(db, source)]
         def named_like_question(item: dict) -> bool:
-            return bool({rank.stem(t) for t in rank.split_identifier(item["name"].rsplit(".", 1)[-1])} & query_words)
+            # "URL resolution" names URLResolver.resolve; "runs the command" names run_from_argv.
+            tokens = {rank.stem(t) for t in rank.split_identifier(item["name"].rsplit(".", 1)[-1])}
+            return bool(tokens & query_words) or any(rank.same_family(t, w) for t in tokens for w in query_words)
 
-        # Named like the question first (`adapter.send` for "sends a request"), then calls leaving the
+        # Named like the question first (`adapter.send` for "sends a request"), then calls into the
+        # entry's own module (`block_context.pop` beside BlockNode.render), then calls leaving the
         # lead's own chain before those leaving another match, then nearest the entry.
-        reach.sort(key=lambda pair: (not named_like_question(pair[1][0]), pair[0]["id"] not in lead_ids, depth_of.get(pair[0]["id"], 0)))
+        home = seeds[0][1].path if seeds else ""
+        reach.sort(key=lambda pair: (not named_like_question(pair[1][0]), pair[1][0]["path"] != home, pair[0]["id"] not in lead_ids, depth_of.get(pair[0]["id"], 0)))
         # Classes the question names and their project base classes: an override in one of them is
         # the code that runs ("How does a ModelForm validate ..." -> BaseModelForm._post_clean), so its
         # calls are followed like any other call on the path.
