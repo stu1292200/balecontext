@@ -141,6 +141,14 @@ text. The fair reruns from 28b940d onward fixed this.
 | 12 Oct | 8a5c61a | Django, 3 hard questions | 2 | 543,861 | 178,067 | 67.3% | 17.6% | Answer citations checked, all correct so far. |
 | 12 Oct | 8a5c61a | Django, 3 "who calls / what breaks" questions | 2 | 228,078 | 86,726 | 62.0% | **−2.9%** | Fewer tokens but slightly more cost: the hook's evidence is written to cache once, and plain Claude needed less reading here. |
 
+### Raw results
+
+The full results of the eight conversation tests from 12 October, with every
+model call, every tool call and both arms' complete answers, are in
+[`benchmarks/results/`](../benchmarks/results/). Local folder paths were
+replaced with `<checkout>`; nothing else was changed. Earlier runs were kept
+only as console summaries, so only their numbers are shown here.
+
 ### Per question, latest runs (median tokens)
 
 Django, three hard multi-file questions (9b1da7b):
