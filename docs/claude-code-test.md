@@ -79,9 +79,12 @@ one for the requests trace, which touches more of the library than fits.
 ### Two questions in one conversation
 
 People usually ask several questions in one Claude Code conversation. With
-`--followup-file`, each task asks a second question in the same conversation
-(`claude -p --resume`), and the totals cover both questions; `summary.json` also
-gives the second question alone (`median_followup_tokens`, `followup_*_saving_percent`).
+`--followup-file`, each task asks a second question in the same conversation, and the
+totals cover both questions; `summary.json` also gives the second question alone
+(`median_followup_tokens`, `followup_*_saving_percent`). Every question goes to one
+Claude Code session, each sent once the previous answer is in, as when you type them
+one after another. `--resume-each` instead starts Claude Code again for each later
+question (`claude -p --resume`), as when you come back to a saved conversation.
 The hook remembers, per conversation, which source it already sent and names it
 instead of sending it again, until Claude Code compacts the conversation. When the
 second question starts from code already sent, the hook adds only the new definitions

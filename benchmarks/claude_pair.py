@@ -4,9 +4,11 @@ Usage (from any folder, with Claude Code and BaleContext installed):
     python benchmarks/claude_pair.py PATH/TO/CHECKOUT --question-file question.txt [--runs 3] [--model sonnet]
 
 Each run calls `claude -p` once per arm in the same checkout, rotating which arm
-goes first. All arms get the same model, the same read-only tools and no other
-MCP servers. Arms: "without" (plain Claude Code), "with" (BaleContext server and
-its instructions) and "hook" (only the prompt hook, which hands the model
+goes first; follow-up questions go to the same session, each once the previous
+answer is in (`--resume-each` starts `claude -p --resume` per question instead).
+All arms get the same model, the same read-only tools and no other MCP servers.
+Arms: "without" (plain Claude Code), "with" (BaleContext server and its
+instructions) and "hook" (only the prompt hook, which hands the model
 BaleContext's evidence before its first turn; system prompt and tools stay the
 same as "without", so cached-prompt pricing is comparable). Default: without,hook.
 Prompt caching makes a single run noisy: use --runs 3 or more. Each task's prompt
@@ -23,12 +25,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import queue
 import random
 import re
 import shutil
 import statistics
 import subprocess
 import sys
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -83,7 +87,61 @@ def invoke(arm: str, args, prompt: str, mcp_config: Path, out: Path, name: str, 
     if resume:
         line[1:1] = ["--resume", resume]
     completed = subprocess.run(line, input=prompt, capture_output=True, text=True, encoding="utf-8", cwd=args.checkout, timeout=args.timeout)
-    raw = completed.stdout.strip()
+    return read_turn(completed.stdout, completed.stderr, completed.returncode, out, name)
+
+
+def converse(arm: str, args, prompts: list[str], mcp_config: Path, out: Path, names: list[str]) -> list[tuple[dict, list[str], dict]]:
+    """Every question in one `claude -p` session, each sent once the previous answer is in, as in
+    an interactive session; returns what `invoke` returns for each question."""
+    line = command(arm, args, mcp_config, out / "balecontext-hook-settings.json")
+    line[1:1] = ["--input-format", "stream-json"]
+    errors = (out / f"{names[0]}.stderr.txt").open("w", encoding="utf-8")
+    process = subprocess.Popen(line, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=errors, text=True, encoding="utf-8", cwd=args.checkout)
+    lines: queue.Queue = queue.Queue()
+
+    def pump() -> None:
+        for text in process.stdout:
+            lines.put(text)
+        lines.put(None)
+
+    threading.Thread(target=pump, daemon=True).start()
+    turns = []
+    try:
+        for prompt, name in zip(prompts, names):
+            process.stdin.write(json.dumps({"type": "user", "message": {"role": "user", "content": prompt}}) + "\n")
+            process.stdin.flush()
+            raw: list[str] = []
+            deadline = time.monotonic() + args.timeout
+            while True:
+                try:
+                    text = lines.get(timeout=max(1.0, deadline - time.monotonic()))
+                except queue.Empty:
+                    raise SystemExit(f"{name} took longer than {args.timeout}s; see {out}.")
+                if text is None:
+                    break
+                raw.append(text)
+                try:
+                    if json.loads(text).get("type") == "result":
+                        break
+                except (json.JSONDecodeError, AttributeError):
+                    continue
+            errors.flush()
+            stderr = (out / f"{names[0]}.stderr.txt").read_text(encoding="utf-8")
+            turns.append(read_turn("".join(raw), stderr, process.poll() or 0, out, name))
+    finally:
+        try:
+            process.stdin.close()
+            process.wait(timeout=60)
+        except (OSError, subprocess.TimeoutExpired):
+            process.kill()
+        errors.close()
+        if not (out / f"{names[0]}.stderr.txt").read_text(encoding="utf-8").strip():
+            (out / f"{names[0]}.stderr.txt").unlink()
+    return turns
+
+
+def read_turn(stdout: str, stderr: str, returncode: int, out: Path, name: str) -> tuple[dict, list[str], dict]:
+    raw = stdout.strip()
     (out / f"{name}.jsonl").write_text(raw + "\n", encoding="utf-8")
     events = []
     for text in raw.splitlines():
@@ -109,9 +167,9 @@ def invoke(arm: str, args, prompt: str, mcp_config: Path, out: Path, name: str, 
                     content = block.get("content")
                     text = content if isinstance(content, str) else json.dumps(content, ensure_ascii=False)
                     calls.append(f"  -> result {len(text):,} chars" + (" (COVERAGE: " + text.split("COVERAGE: ", 1)[1][:8].split(".")[0] + ")" if "COVERAGE: " in text else ""))
-    if not data or completed.returncode != 0 and not data.get("usage"):
-        (out / f"{name}.stderr.txt").write_text(completed.stderr, encoding="utf-8")
-        raise SystemExit(f"{name} failed; see {out}. First error line: {(completed.stderr or raw).strip()[:300]}")
+    if not data or returncode != 0 and not data.get("usage"):
+        (out / f"{name}.stderr.txt").write_text(stderr, encoding="utf-8")
+        raise SystemExit(f"{name} failed; see {out}. First error line: {(stderr or raw).strip()[:300]}")
     own = {field: sum(int(usage.get(field) or 0) for usage in messages.values()) for field in USAGE_FIELDS}
     (out / f"{name}.answer.md").write_text(str(data.get("result", "")), encoding="utf-8")
     return data, calls, own
@@ -121,7 +179,10 @@ def run_arm(arm: str, args, question: str, mcp_config: Path, out: Path, number: 
     started = time.monotonic()
     hook_log = args.checkout / ".balecontext" / "hook-log.jsonl"
     hook_lines = len(hook_log.read_text(encoding="utf-8").splitlines()) if hook_log.exists() else 0
-    data, calls, _ = invoke(arm, args, question, mcp_config, out, f"run{number}-{arm}")
+    names = [f"run{number}-{arm}"] + [f"run{number}-{arm}.followup" + (str(position) if len(followups) > 1 else "") for position in range(1, len(followups or []) + 1)]
+    # A conversation runs in one session unless --resume-each starts Claude Code again per question.
+    answered = iter(converse(arm, args, [question] + list(followups or []), mcp_config, out, names)) if followups and not args.resume_each else None
+    data, calls, _ = next(answered) if answered else invoke(arm, args, question, mcp_config, out, names[0])
     usage = {field: int((data.get("usage") or {}).get(field) or 0) for field in USAGE_FIELDS}
     cost, turns = data.get("total_cost_usd"), data.get("num_turns")
     first = {"tokens": sum(usage.values()), "cost": cost}
@@ -129,17 +190,16 @@ def run_arm(arm: str, args, question: str, mcp_config: Path, out: Path, number: 
     errors = [data]
     session, reports = data.get("session_id"), []
     for position, followup in enumerate(followups or [], 1):
-        # Later questions in the same conversation (`--resume`), as people use Claude Code.
-        name = f"run{number}-{arm}.followup" + (str(position) if len(followups) > 1 else "")
-        later, later_calls, own = invoke(arm, args, followup, mcp_config, out, name, resume=session)
+        # Later questions in the same conversation; with --resume-each, a new `claude -p --resume` each.
+        later, later_calls, own = next(answered) if answered else invoke(arm, args, followup, mcp_config, out, names[position], resume=session)
         session = later.get("session_id") or session
         errors.append(later)
         calls += [f"--- follow-up question {position} ---"] + later_calls
         reported = {field: int((later.get("usage") or {}).get(field) or 0) for field in USAGE_FIELDS}
-        # A resumed run has reported its own calls' usage but the whole conversation's cost
-        # (Claude Code restores its cost tracker, and `modelUsage` with it). Check each against
-        # the follow-up's own model calls rather than assume; with nothing to check, usage is
-        # taken as the run's own and cost as cumulative, as documented.
+        # A later question, in the same session or resumed, has reported its own calls' usage but
+        # the whole conversation's cost (Claude Code keeps or restores its cost tracker, and
+        # `modelUsage` with it). Check each against the question's own model calls rather than
+        # assume; with nothing to check, usage is taken as its own and cost as cumulative.
         before_total, own_total = sum(usage.values()), sum(own.values())
         cumulative = bool(own_total) and abs(sum(reported.values()) - before_total - own_total) < abs(sum(reported.values()) - own_total)
         tracked = sum(int(model.get(field) or 0) for model in (later.get("modelUsage") or {}).values() if isinstance(model, dict) for field in MODEL_USAGE_FIELDS)
@@ -199,6 +259,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--same-prompt", action="store_true", help="Send the identical prompt every time (lets later runs reuse earlier runs' cache)")
     parser.add_argument("--followup-file", type=Path, action="append",
                         help="Later questions asked in the same conversation, one per file or several separated by a line of ---; totals then cover every question")
+    parser.add_argument("--resume-each", action="store_true",
+                        help="Start Claude Code again for each follow-up (`--resume`) instead of asking every question in one session")
     parser.add_argument("--out", type=Path, help="Results folder (default: claude-pair-results/<time> next to this script)")
     args = parser.parse_args(argv)
     args.checkout = args.checkout.resolve()

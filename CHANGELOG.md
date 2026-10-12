@@ -100,6 +100,11 @@
   no longer listed as missing. Django's error-rendering follow-up now carries everything
   its answer cited in 5,500 characters, with no saved file; the 31 gold questions and
   relevance are unchanged.
+- `benchmarks/claude_pair.py` asks a conversation's questions in one Claude Code session,
+  each once the previous answer is in, as people type them; `--resume-each` keeps the
+  old way (a new `claude -p --resume` per question). Resuming after a one-step first
+  answer made Claude Code re-write about 14,000 cached tokens on the next question in
+  every Django hook run, a cost an ongoing session may not have.
 - `benchmarks/claude_pair.py` writes `share.md` itself at the end of a test.
 - `benchmarks/share_results.py` bundles one paired test (summary, per-question figures,
   per-call usage, tool calls and answers) into a single `share.md`.
