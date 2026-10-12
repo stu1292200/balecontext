@@ -49,6 +49,32 @@ def _base(path: str, text: str) -> Extraction:
     return Extraction(nodes=[make_node(path, path, "file", 1, len(lines), lines)])
 
 
+def _constructed(function: ast.AST) -> dict[str, str]:
+    """Local names bound once, to a class call: `utility = ManagementUtility(argv)` -> ManagementUtility.
+
+    A name assigned again, deleted, used as a loop target or taken as a parameter is left out.
+    """
+    stores: dict[str, int] = {}
+    built: dict[str, str] = {}
+    arguments = function.args
+    for argument in [*arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs, arguments.vararg, arguments.kwarg]:
+        if argument is not None:
+            stores[argument.arg] = 1
+    queue = list(function.body)
+    while queue:
+        child = queue.pop()
+        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+            continue  # nested scopes bind their own names
+        if isinstance(child, ast.Name) and not isinstance(child.ctx, ast.Load):
+            stores[child.id] = stores.get(child.id, 0) + 1
+        elif isinstance(child, ast.Assign) and len(child.targets) == 1 and isinstance(child.targets[0], ast.Name) and isinstance(child.value, ast.Call):
+            callee = ast.unparse(child.value.func)
+            if re.fullmatch(r"(?:[A-Za-z_]\w*\.)*_?[A-Z]\w*", callee) and not callee.rsplit(".", 1)[-1].isupper():
+                built[child.targets[0].id] = callee
+        queue.extend(ast.iter_child_nodes(child))
+    return {name: callee for name, callee in built.items() if stores.get(name) == 1}
+
+
 def text_extract(path: str, text: str) -> Extraction:
     result = _base(path, text)
     lines = text.splitlines() or [""]
@@ -71,6 +97,10 @@ class PythonExtractor(ast.NodeVisitor):
         self.scopes: list[str] = []
         self.aliases: dict[str, tuple[str, str]] = {}
         self.class_stack: list[str] = []
+        # Per function: locals bound once to a class call, so `utility.execute()` names its class,
+        # and parameter names (`self.get_response = get_response` only keeps what was passed in).
+        self.constructed: list[dict[str, str]] = [{}]
+        self.parameters: list[set[str]] = [set()]
 
     def _definition(self, node: ast.AST, kind: str) -> None:
         name = ".".join(self.scopes + [node.name])
@@ -91,12 +121,44 @@ class PythonExtractor(ast.NodeVisitor):
             self.class_stack.pop()
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        arguments = node.args
+        self.constructed.append(_constructed(node))
+        self.parameters.append({a.arg for a in [*arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs, arguments.vararg, arguments.kwarg] if a})
         self._definition(node, "method" if self.class_stack else "function")
+        self.constructed.pop()
+        self.parameters.pop()
 
     visit_AsyncFunctionDef = visit_FunctionDef
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        self.constructed.append({})
+        self.parameters.append(set())
         self._definition(node, "class")
+        self.constructed.pop()
+        self.parameters.pop()
+
+    def _stores(self, targets: list[ast.AST], value: ast.AST, line: int) -> None:
+        if self.class_stack and self.stack[-1].kind == "class" and isinstance(value, (ast.Name, ast.Attribute)):
+            # `request_class = WSGIRequest` in a class body: `self.request_class(environ)` builds a WSGIRequest.
+            for target in targets:
+                if isinstance(target, ast.Name):
+                    self._ref(ast.unparse(value), "binds", self.stack[-1].id, line)
+                    self.result.refs[-1]["attr"] = target.id
+        elif self.class_stack and not (isinstance(value, ast.Name) and value.id in self.parameters[-1]):
+            # `self._middleware_chain = handler`: a later `self._middleware_chain(request)` runs what this
+            # method built. Storing an argument as it came (`self.get_response = get_response`) says nothing more.
+            for target in targets:
+                if isinstance(target, ast.Attribute) and isinstance(target.value, ast.Name) and target.value.id in {"self", "cls"}:
+                    self._ref(f"{target.value.id}.{target.attr}", "sets", self.stack[-1].id, line)
+
+    def visit_Assign(self, node: ast.Assign) -> None:
+        self._stores(node.targets, node.value, node.lineno)
+        self.generic_visit(node)
+
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+        if node.value is not None:
+            self._stores([node.target], node.value, node.lineno)
+        self.generic_visit(node)
 
     def _ref(self, name: str, relation: str, source: str, line: int) -> None:
         self.result.refs.append({
@@ -105,7 +167,11 @@ class PythonExtractor(ast.NodeVisitor):
         })
 
     def visit_Call(self, node: ast.Call) -> None:
-        self._ref(ast.unparse(node.func), "calls", self.stack[-1].id, node.lineno)
+        name = ast.unparse(node.func)
+        if isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name) and node.func.value.id in self.constructed[-1]:
+            # `utility.execute()` after `utility = ManagementUtility(argv)` calls ManagementUtility.execute.
+            name = self.constructed[-1][node.func.value.id] + "." + node.func.attr
+        self._ref(name, "calls", self.stack[-1].id, node.lineno)
         if isinstance(node.func, ast.Attribute):
             # The callee attribute is already recorded as a call, not as a property use.
             self.visit(node.func.value)
@@ -328,22 +394,43 @@ def resolve(nodes: list[dict], refs: list[dict]) -> list[dict]:
     bindings: dict[tuple[str, str, str], tuple[str, str]] = {}
     # Names a file imports, resolved or not: `re.compile()` is a module call, never a project method.
     imported_names = {(by_id[r["source"]]["path"], r["name"]) for r in refs if r["relation"] == "imports"}
-    edges: list[dict] = []
-    for ref in refs:
-        if ref["relation"] != "imports":
-            continue
+    imports = [ref for ref in refs if ref["relation"] == "imports"]
+    for ref in imports:
         path = by_id[ref["source"]]["path"]
         target = target_module(path, ref["module"])
-        if not target and ref.get("symbol"):
-            target = target_module(path, ref["module"] + "." + ref["symbol"])
-            imported_symbol = ""
-        else:
-            imported_symbol = ref.get("symbol", "")
+        imported_symbol = ref.get("symbol", "")
+        if imported_symbol and path.endswith((".py", ".pyi")) and not (target and symbol(target, imported_symbol)):
+            # `from django.core.handlers import base` and `from . import sessions` name a submodule,
+            # unless the package itself defines that name.
+            submodule = target_module(path, ref["module"] + ("" if ref["module"].endswith(".") else ".") + imported_symbol)
+            if submodule:
+                target, imported_symbol = submodule, ""
         if target:
-            destination = symbol(target, imported_symbol) if imported_symbol else files[target]["id"]
+            bindings[(path, ref.get("scope", ""), ref["name"])] = (target, imported_symbol)
+
+    def exported(path: str, name: str) -> str | None:
+        """A name a module defines or re-exports: `from .base import Model` in a package's
+        `__init__.py` makes `models.Model` the class in base.py (followed through four modules)."""
+        for _ in range(4):
+            found = symbol(path, name)
+            if found or not name:
+                return found
+            head, _, rest = name.partition(".")
+            binding = bindings.get((path, "", head))
+            if not binding:
+                return None
+            path, name = binding[0], ".".join(filter(None, [binding[1], rest]))
+        return None
+
+    edges: list[dict] = []
+    for ref in imports:
+        path = by_id[ref["source"]]["path"]
+        binding = bindings.get((path, ref.get("scope", ""), ref["name"]))
+        if binding:
+            destination = exported(*binding) if binding[1] else files[binding[0]]["id"]
             if destination:
                 edges.append(edge(ref["source"], destination, "imports", line=ref.get("line")))
-            bindings[(path, ref.get("scope", ""), ref["name"])] = (target, imported_symbol)
+
     def lexical(ref: dict) -> str | None:
         """A name defined in this file's enclosing scopes or bound by an import."""
         path = by_id[ref["source"]]["path"]
@@ -354,7 +441,7 @@ def resolve(nodes: list[dict], refs: list[dict]) -> list[dict]:
             found = symbol(path, ".".join(filter(None, [scope, ref["name"]])))
             binding = bindings.get((path, scope, head))
             if not found and binding:
-                found = symbol(binding[0], ".".join(filter(None, [binding[1], suffix])))
+                found = exported(binding[0], ".".join(filter(None, [binding[1], suffix])))
             if found:
                 return found
         return None
@@ -380,19 +467,53 @@ def resolve(nodes: list[dict], refs: list[dict]) -> list[dict]:
             queue += bases.get(base, [])
         return None
 
+    def lineage(class_id: str | None) -> list[str]:
+        """The class, then its project base classes nearest first."""
+        order, queue = [], [class_id] if class_id else []
+        while queue:
+            current = queue.pop(0)
+            if current not in order:
+                order.append(current)
+                queue += bases.get(current, [])
+        return order
+
+    # `request_class = WSGIRequest` in a class body, by (class, attribute).
+    class_values: dict[tuple[str, str], str] = {}
+    # Methods that store `self._middleware_chain = handler`, by (class, attribute).
+    setters: dict[tuple[str, str], list[str]] = {}
     for ref in refs:
-        if ref["relation"] == "imports":
+        if ref["relation"] == "binds":
+            value = lexical(ref)
+            if value and value != ref["source"] and by_id[value]["kind"] in {"class", "function", "method"}:
+                class_values[(ref["source"], ref["attr"])] = value
+        elif ref["relation"] == "sets" and ref.get("class_name"):
+            owner = symbol(by_id[ref["source"]]["path"], ref["class_name"])
+            methods = setters.setdefault((owner, ref["name"].split(".", 1)[1]), []) if owner else []
+            if owner and ref["source"] not in methods and by_id[ref["source"]]["kind"] == "method":
+                methods.append(ref["source"])
+
+    for ref in refs:
+        if ref["relation"] in {"imports", "binds", "sets"}:
             continue
         path = by_id[ref["source"]]["path"]
         name = ref["name"]
         scope_parts = ref.get("scope", "").split(".") if ref.get("scope") else []
         destination = None
+        assigned: list[str] = []
         if name.startswith(("self.", "cls.", "this.")) and ref.get("class_name"):
             attr = name.split(".", 1)[1]
             destination = symbol(path, ref["class_name"] + "." + attr)
             if not destination and "." not in attr:
                 # A method the class inherits from a project base class (`self.render()` in a mixin).
-                destination = inherited(symbol(path, ref["class_name"]), attr)
+                classes = lineage(symbol(path, ref["class_name"]))
+                destination = inherited(classes[0] if classes else None, attr)
+                if not destination and ref["relation"] == "calls":
+                    # `self.request_class(environ)` where a class body says `request_class = WSGIRequest`.
+                    destination = next((class_values[(c, attr)] for c in classes if (c, attr) in class_values), None)
+                if not destination and ref["relation"] == "calls":
+                    # `self._middleware_chain(request)` runs what `load_middleware` stored there, so the
+                    # call is linked to the methods that set the attribute (ASSIGNED, not a direct call).
+                    assigned = [m for m in next((setters[(c, attr)] for c in classes if (c, attr) in setters), []) if m != ref["source"]]
         for length in range(len(scope_parts), -1, -1):
             scope = ".".join(scope_parts[:length])
             if destination:
@@ -406,7 +527,12 @@ def resolve(nodes: list[dict], refs: list[dict]) -> list[dict]:
             if not destination and binding:
                 target, imported = binding
                 qualified = ".".join(filter(None, [imported, suffix]))
-                destination = symbol(target, qualified)
+                destination = exported(target, qualified)
+        if not destination and name.count(".") == 1 and not name.startswith(("self.", "cls.", "this.")):
+            # `ManagementUtility.execute` (from `utility = ManagementUtility(argv)`) defined on a base class.
+            owner_class = lexical(ref | {"name": name.split(".")[0]})
+            if owner_class and by_id[owner_class]["kind"] == "class":
+                destination = inherited(owner_class, name.split(".")[1])
         if not destination and "." in name and not name.startswith(("self.", "cls.", "this.")):
             # `app.render` from response.js: a dotted name defined exactly once in the project's code.
             hits = global_names.get(name, [])
@@ -435,6 +561,12 @@ def resolve(nodes: list[dict], refs: list[dict]) -> list[dict]:
             candidates = exact or suffix or (defined if leaf in project_leaves else [])
         if destination:
             edges.append(edge(ref["source"], destination, ref["relation"], "INFERRED", ref.get("line")))
+        elif 1 <= len(assigned) <= 3:
+            for setter in assigned:
+                edges.append(edge(ref["source"], setter, "calls", "ASSIGNED", ref.get("line")))
+        elif assigned:
+            # Set in many places: the call cannot be followed, and a response must not claim it was.
+            edges.append(edge(ref["source"], "unresolved:" + name, "calls", "UNRESOLVED", ref.get("line")))
         elif ref["relation"] == "calls" and 1 <= len(candidates) <= 3:
             # `field._clean_bound_field(bf)`: the receiver's type is unknown, but only a few project
             # methods carry this name. Kept as CANDIDATE edges, never walked as a known call.

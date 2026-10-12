@@ -217,13 +217,15 @@ def _callees(db, node_id: str, path: str, cross: bool = False) -> list[dict]:
     a class without one is left out (its header says little about what the call does).
     """
     rows = db.execute(
-        "SELECT n.id,n.path,n.name,n.kind,n.start,n.end,e.line,e.relation FROM edges e JOIN nodes n ON n.id=e.target "
+        "SELECT n.id,n.path,n.name,n.kind,n.start,n.end,e.line,e.relation,e.evidence FROM edges e JOIN nodes n ON n.id=e.target "
         "WHERE e.source=? AND e.relation IN ('calls','uses') AND e.evidence != 'CANDIDATE' AND n.kind NOT IN ('file','chunk') "
         + ("" if cross else "AND n.path=? ") + "ORDER BY e.line, n.start", (node_id,) if cross else (node_id, path))
     found = []
     for row in map(dict, rows):
         if cross and row["path"] != path and rank.path_class(row["path"]) != "code":
             continue
+        if row.pop("evidence") == "ASSIGNED":
+            row["assigned"] = _assigned_attribute(db, path, row)
         if row.pop("relation") == "calls" and row["kind"] == "class":
             init = db.execute("SELECT id,path,name,kind,start,end FROM nodes WHERE path=? AND kind='method' AND name IN (?,?)",
                               (row["path"], row["name"] + ".__init__", row["name"] + ".constructor")).fetchone()
@@ -232,6 +234,22 @@ def _callees(db, node_id: str, path: str, cross: bool = False) -> list[dict]:
             row = dict(init) | {"line": row["line"]}
         found.append(row)
     return found
+
+
+def _assigned_attribute(db, caller_path: str, setter: dict) -> str:
+    """`self._middleware_chain` for a call at `setter["line"]` that runs what `setter` stored there."""
+    texts = {row[0]: row[1].splitlines() for row in db.execute("SELECT path, content FROM files WHERE path IN (?, ?)", (caller_path, setter["path"]))}
+    caller_lines, setter_lines = texts.get(caller_path, []), texts.get(setter["path"], [])
+    called = re.findall(r"\b((?:self|cls|this)\.[\w$#]+)\s*\(", caller_lines[setter["line"] - 1]) if setter.get("line") and setter["line"] <= len(caller_lines) else []
+    body = "\n".join(setter_lines[setter["start"] - 1:setter["end"]])
+    return next((name for name in called if re.search(re.escape(name) + r"\s*(?::[^=\n]*)?=(?!=)", body)), called[0] if called else "an attribute")
+
+
+def _call_role(caller: dict, callee: dict, where: str = "") -> str:
+    """How `callee` is reached from `caller`: a call at a line, or the method that stored what it calls."""
+    if callee.get("assigned"):
+        return f"sets {callee['assigned']}, which {caller['name']} calls at line {callee['line']}{where}"
+    return f"called by {caller['name']} at line {callee['line']}{where}" if callee.get("line") else f"used by {caller['name']}"
 
 
 def _outward(db, item: dict) -> list[tuple[dict, str]]:
@@ -251,7 +269,9 @@ def _outward(db, item: dict) -> list[tuple[dict, str]]:
         if row["evidence"] == "CANDIDATE":
             by_line.setdefault(row["line"] or 0, []).append(row)
         elif row["path"] != item["path"]:
-            found.append((row, f"called by {item['name']} at line {row['line']} (other file)"))
+            if row["evidence"] == "ASSIGNED":
+                row["assigned"] = _assigned_attribute(db, item["path"], row)
+            found.append((row, _call_role(item, row, " (other file)")))
     for line, rows in by_line.items():
         # A real implementation before an abstract stub (BaseAdapter.send), a base class before its
         # subclasses (ModelBackend before RemoteUserBackend), then the fuller definition.
@@ -322,6 +342,21 @@ def _overrides(db, item: dict) -> list[tuple[dict, str]]:
         method = db.execute("SELECT id,path,name,kind,start,end FROM nodes WHERE path=? AND name=? AND kind='method'", (row["path"], row["name"] + "." + leaf)).fetchone()
         if method:
             found.append((dict(method), f"overrides {item['name']} in subclass {row['name']}"))
+    return found
+
+
+def _own_classes(db, item: dict) -> set[tuple[str, str]]:
+    """The class a method belongs to and its project base classes, as (path, name)."""
+    if item["kind"] != "method" or "." not in item["name"]:
+        return set()
+    found, queue = set(), [(item["path"], item["name"].rsplit(".", 1)[0])]
+    while queue and len(found) < 20:
+        path, name = queue.pop(0)
+        if (path, name) not in found:
+            found.add((path, name))
+            queue += [(row[0], row[1]) for row in db.execute(
+                "SELECT b.path, b.name FROM nodes c JOIN edges e ON e.source=c.id AND e.relation='inherits' JOIN nodes b ON b.id=e.target "
+                "WHERE c.path=? AND c.name=? AND c.kind='class' AND b.kind='class'", (path, name))]
     return found
 
 
@@ -560,18 +595,21 @@ def context(project: Project, query: str, budget: int = 3000, session: dict | No
                     parent_tokens = {rank.stem(t) for t in rank.split_identifier(parent["name"].rsplit(".", 1)[-1])}
                     callees = [c for c in _callees(db, parent["id"], parent["path"], cross and step == 0) if c["id"] not in planned_ids]
                     parent_leaf = parent["name"].rsplit(".", 1)[-1].lstrip("_").lower()
+                    # A method the object inherits (`self.get_response()` in WSGIHandler) is its own code.
+                    own = _own_classes(db, parent) if any(c["path"] != parent["path"] for c in callees) else set()
 
                     def priority(c: dict) -> tuple:
                         leaf = c["name"].rsplit(".", 1)[-1].lstrip("_").lower()
                         tokens = {rank.stem(t) for t in rank.split_identifier(leaf)}
+                        elsewhere = c["path"] != parent["path"] and (c["path"], c["name"].rsplit(".", 1)[0]) not in own
                         # `save` -> `save_base` continues the same operation; shared words come next.
-                        return (c["path"] != parent["path"], not leaf.startswith(parent_leaf), -len(tokens & (query_words | parent_tokens)), c.get("line") or 0)
+                        return (elsewhere, not leaf.startswith(parent_leaf), -len(tokens & (query_words | parent_tokens)), c.get("line") or 0)
 
                     callees.sort(key=priority)
                     for callee in callees:
                         if callee["id"] not in planned_ids:
                             depth_of[callee["id"]] = depth_of.get(parent["id"], 0) + 1
-                            plan(callee, f"called by {parent['name']} at line {callee['line']}" if callee.get("line") else f"used by {parent['name']}")
+                            plan(callee, _call_role(parent, callee))
                             following.append(callee)
                 level = following
 
@@ -841,7 +879,7 @@ def context(project: Project, query: str, budget: int = 3000, session: dict | No
             for callee in _callees(db, shown_item["id"], shown_item["path"]):
                 # An abstract method whose implementations are shown needs no reading of its own.
                 if callee["id"] not in shown_ids and callee["id"] not in covered and not any(a <= callee["start"] and callee["end"] <= b for a, b in occupied.get(callee["path"], [])):
-                    not_included.append((callee, f"called by {shown_item['name']} at line {callee['line']}"))
+                    not_included.append((callee, _call_role(shown_item, callee)))
         # Source sent for an earlier question is still in the conversation, so it is not missing.
         not_included = list({item["id"]: (item, role) for item, role in not_included
                              if not any(a <= item["start"] and item["end"] <= b for a, b in session_sent.get(item["path"], []))}.values())

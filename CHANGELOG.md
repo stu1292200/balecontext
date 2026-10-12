@@ -119,6 +119,18 @@
   template engine render the extends and block tags" now leads with `ExtendsNode.render`
   instead of `EngineHandler.templates`, `EngineMixin.engine` and `Message.tags`. The 31 gold
   questions and both paid-test conversations are unchanged.
+- Calls are followed through more of Python's own ways of reaching code (index schema 10):
+  `from django.core.handlers import base` binds the submodule, so `WSGIHandler(base.BaseHandler)`
+  inherits `get_response`; names a package re-exports (`from django.urls import set_urlconf`) reach
+  the module that defines them; `utility = ManagementUtility(argv)` makes `utility.execute()`
+  `ManagementUtility.execute`; `request_class = WSGIRequest` in a class body makes
+  `self.request_class(environ)` build a `WSGIRequest`; and a call on an attribute a method stored
+  (`self._middleware_chain(request)`) shows that method, labelled "sets self._middleware_chain, which
+  BaseHandler.get_response calls at line 142". A method the object inherits counts as its own code
+  when the walk orders calls. Django's request trace from `WSGIHandler.__call__` now reaches the
+  middleware chain, `_get_response`, URL resolution and the view call (it stopped at `get_response`
+  and claimed COMPLETE); the 31 gold questions, relevance and both paid-test conversations are
+  unchanged or gain only correct calls.
 - `benchmarks/claude_pair.py` writes `share.md` itself at the end of a test.
 - `benchmarks/share_results.py` bundles one paired test (summary, per-question figures,
   per-call usage, tool calls and answers) into a single `share.md`.

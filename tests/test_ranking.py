@@ -357,6 +357,63 @@ class ResolveTest(unittest.TestCase):
         targets = {by_id[e["target"]]["name"] for e in resolve(nodes, result.refs) if e["evidence"] == "CANDIDATE"}
         self.assertEqual(targets, {"Query.chain"})
 
+    @staticmethod
+    def _calls(files: dict[str, str]) -> set[tuple[str, str, str]]:
+        results = [extract(path, text) for path, text in files.items()]
+        nodes = [node.dict() for result in results for node in result.nodes]
+        by_id = {node["id"]: node for node in nodes}
+        edges = resolve(nodes, [ref for result in results for ref in result.refs])
+        return {(by_id[e["source"]]["name"], by_id.get(e["target"], {"name": e["target"]})["name"], e["relation"] + " " + e["evidence"]) for e in edges}
+
+    def test_package_imports_reach_submodules_and_re_exports(self):
+        calls = self._calls({
+            "pkg/__init__.py": "from .base import Model\n",
+            "pkg/base.py": "class Model:\n    def save(self):\n        return 1\n",
+            "pkg/handlers/__init__.py": "",
+            "pkg/handlers/base.py": "class BaseHandler:\n    def get_response(self, request):\n        return request\n",
+            "app.py": ("from pkg.handlers import base\nfrom pkg import Model\n\n"
+                       "class WSGIHandler(base.BaseHandler):\n    def __call__(self, environ):\n        return self.get_response(environ)\n\n"
+                       "def make():\n    model = Model()\n    return model.save()\n"),
+        })
+        self.assertIn(("WSGIHandler", "BaseHandler", "inherits INFERRED"), calls)
+        self.assertIn(("WSGIHandler.__call__", "BaseHandler.get_response", "calls INFERRED"), calls)
+        self.assertIn(("make", "Model.save", "calls INFERRED"), calls)
+
+    def test_a_local_built_from_a_class_names_its_methods(self):
+        calls = self._calls({"cli.py": (
+            "class Utility:\n    def execute(self):\n        return 1\n\n"
+            "class Step:\n    def execute(self):\n        return 2\n\n"
+            "def main(argv):\n    utility = Utility(argv)\n    return utility.execute()\n\n"
+            "def other(flag):\n    runner = Utility()\n    if flag:\n        runner = Step()\n    return runner.execute()\n")})
+        self.assertIn(("main", "Utility.execute", "calls INFERRED"), calls)
+        # Bound twice: the class is not known, so both stay candidates.
+        self.assertNotIn(("other", "Utility.execute", "calls INFERRED"), calls)
+
+    def test_a_call_on_a_stored_attribute_reaches_the_method_that_built_it(self):
+        temporary = tempfile.TemporaryDirectory(prefix="balecontext-assigned-")
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        source = ("def wrap(function):\n    return function\n\n"
+                  "class Request:\n    def __init__(self, environ):\n        self.environ = environ\n\n"
+                  "class Handler:\n    request_class = Request\n\n"
+                  "    def __init__(self, get_response):\n        self.get_response = get_response\n\n"
+                  "    def load_chain(self):\n        handler = wrap(self._respond)\n        self._chain = handler\n\n"
+                  "    def handle(self, environ):\n        request = self.request_class(environ)\n"
+                  "        return self._chain(request) or self.get_response(request)\n\n"
+                  "    def _respond(self, request):\n        return request\n")
+        (root / "handler.py").write_text(source, encoding="utf-8")
+        calls = self._calls({"handler.py": source})
+        self.assertIn(("Handler.handle", "Handler.load_chain", "calls ASSIGNED"), calls)
+        self.assertIn(("Handler.handle", "Request", "calls INFERRED"), calls)
+        # Storing an argument as it came says nothing about what it is.
+        self.assertNotIn(("Handler.handle", "Handler.__init__", "calls ASSIGNED"), calls)
+        response = context(Project(root), "How does Handler.handle run the chain?")
+        names = [source["name"] for source in response["sources"]]
+        self.assertEqual(names[0], "Handler.handle")
+        for name in ("Handler.load_chain", "Handler._respond", "Request.__init__"):
+            self.assertIn(name, names)
+        self.assertIn("sets self._chain, which Handler.handle calls at line 20", response["text"])
+
     def test_entry_is_the_outermost_matching_function(self):
         temporary = tempfile.TemporaryDirectory(prefix="balecontext-root-")
         self.addCleanup(temporary.cleanup)
