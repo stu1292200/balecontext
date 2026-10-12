@@ -118,16 +118,36 @@ RESULT_WINDOW = 12
 # One-line entries per section before the rest are only counted.
 LISTED_LINES = 40
 _TABLES: dict[str, tuple[str, rank.SymbolTable]] = {}
+_RANKED: dict[tuple[str, str, str], tuple[list[dict], list]] = {}
+
+
+def _generation(db) -> str:
+    return str((db.execute("SELECT value FROM metadata WHERE key='generation'").fetchone() or ["0"])[0])
 
 
 def _symbol_table(project: Project, db) -> rank.SymbolTable:
-    generation = (db.execute("SELECT value FROM metadata WHERE key='generation'").fetchone() or ["0"])[0]
+    generation = _generation(db)
     cached = _TABLES.get(str(project.db_path))
     if cached and cached[0] == generation:
         return cached[1]
     table = rank.SymbolTable(db.execute("SELECT id,path,name,kind,start,end FROM nodes"))
     _TABLES[str(project.db_path)] = (generation, table)
     return table
+
+
+def _ranked(project: Project, db, table: rank.SymbolTable, parsed: rank.Query, query: str) -> tuple[list[dict], list]:
+    """Body matches and ranked definitions for a question, remembered within the process: the hook
+    ranks a prompt once and packs it at several budgets, and the ranking does not depend on the budget."""
+    key = (str(project.db_path), _generation(db), query)
+    found = _RANKED.get(key)
+    if found is None:
+        body = _body_matches(db, query)
+        body_scores = {row["id"]: 40.0 * (1 - index / max(1, len(body))) for index, row in enumerate(body) if row["kind"] not in {"file", "chunk"}}
+        found = _RANKED[key] = (body, rank.score(table, parsed, body_scores))
+        if len(_RANKED) > 8:
+            del _RANKED[next(iter(_RANKED))]
+    body, ranked = found
+    return [dict(row) for row in body], [(value, entry, set(matched)) for value, entry, matched in ranked]
 
 
 def _docstrings(content: str) -> dict[int, tuple[int, int]]:
@@ -146,11 +166,19 @@ def _docstrings(content: str) -> dict[int, tuple[int, int]]:
     return ranges
 
 
+_FILES: dict[tuple[str, str], tuple[dict, dict]] = {}
+
+
 class _Files:
-    def __init__(self, db):
+    """Lines and docstring ranges of the files a pack reads, fetched once. With a `key` (the index
+    and its generation) they are kept for the process, so the hook's several packs of one prompt
+    read and parse each file once."""
+
+    def __init__(self, db, key: tuple[str, str] | None = None):
         self.db = db
-        self.lines: dict[str, list[str]] = {}
-        self.docs: dict[str, dict[int, tuple[int, int]]] = {}
+        self.lines, self.docs = _FILES.setdefault(key, ({}, {})) if key else ({}, {})
+        if len(_FILES) > 2:
+            del _FILES[next(iter(_FILES))]
 
     def get(self, path: str) -> list[str]:
         if path not in self.lines:
@@ -1089,11 +1117,9 @@ def context(project: Project, query: str, budget: int = 3000, session: dict | No
     with project.connect(snapshot=True) as db:
         table = _symbol_table(project, db)
         parsed = rank.parse(query, table.package)
-        body = _body_matches(db, query)
-        body_scores = {row["id"]: 40.0 * (1 - index / max(1, len(body))) for index, row in enumerate(body) if row["kind"] not in {"file", "chunk"}}
-        ranked = rank.score(table, parsed, body_scores)
+        body, ranked = _ranked(project, db, table, parsed, query)
         picked = rank.pick_seeds(parsed, ranked)
-        files = _Files(db)
+        files = _Files(db, (str(project.db_path), _generation(db)))
         # The definition a callers question names leads as it is, not the outermost of its callers.
         named = next((seed for seed in picked if seed[2]), picked[0] if picked else None)
         if named and named[1].kind in ("function", "method", "class") and CALLERS_QUESTION.search(query):
@@ -1544,7 +1570,7 @@ def expand(project: Project, ids: list[str], budget: int = 4000, session: dict |
         raise ValueError("Provide 1 to 20 node ids from a previous BaleContext response.")
     project.index()
     with project.connect(snapshot=True) as db:
-        files = _Files(db)
+        files = _Files(db, (str(project.db_path), _generation(db)))
         sections = [NOTICE]
         used, missing, truncated = [], [], []
         sent = _session_sent(db, session)

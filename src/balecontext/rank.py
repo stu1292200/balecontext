@@ -215,6 +215,14 @@ class SymbolTable:
         self.by_path_token: dict[str, list[int]] = {}
         # A file holds many definitions; its path is tokenised once.
         by_path: dict[str, tuple[set[str], str, str]] = {}
+        # Many definitions share a name (`__init__`, `render`); each name is tokenised once.
+        tokens_of: dict[str, set[str]] = {}
+
+        def tokens(name: str) -> set[str]:
+            if name not in tokens_of:
+                tokens_of[name] = {stem(t) for t in split_identifier(name)}
+            return tokens_of[name]
+
         for row in rows:
             if row["kind"] in {"file", "chunk"}:
                 continue
@@ -224,11 +232,11 @@ class SymbolTable:
                 by_path[row["path"]] = ({stem(t) for part in pure.parts[:-1] for t in split_identifier(part)} | {stem(t) for t in split_identifier(pure.stem)},
                                         stem(pure.stem.lower()), path_class(row["path"]))
             path_tokens, file_stem, category = by_path[row["path"]]
-            leaf_tokens = {stem(t) for t in split_identifier(segments[-1])}
+            leaf_tokens = tokens(segments[-1])
             entry = Entry(
                 row["id"], row["path"], row["name"], row["kind"], row["start"], row["end"], segments[-1].lower().lstrip("#"),
                 [segment.lower() for segment in segments[:-1]],
-                {stem(t) for t in split_identifier(row["name"])} if len(segments) > 1 else leaf_tokens,
+                set().union(*(tokens(segment) for segment in segments)) if len(segments) > 1 else leaf_tokens,
                 leaf_tokens, path_tokens, file_stem, category,
             )
             index = len(self.entries)

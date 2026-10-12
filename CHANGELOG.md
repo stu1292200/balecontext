@@ -232,6 +232,10 @@
   Windows PC against 2 to 5 here. `balecontext install --hook` raises the limit in an existing
   settings file. Each line of `.balecontext/hook-log.jsonl` now also records how long the hook took
   and how much of that was refreshing the index, so a slow machine can be understood from its log.
+- The hook ranks a prompt once: body matches, the ranking and each file's lines and docstring
+  ranges are kept for the process, so packing the prompt at several budgets and building the
+  extra parts no longer repeat them. The packs are the same; the hook takes about 40% less time
+  (Django question 1 here: 2.9 s instead of 5.0 s, index refresh included).
 - `benchmarks/claude_pair.py` writes `share.md` itself at the end of a test.
 - `benchmarks/share_results.py` bundles one paired test (summary, per-question figures,
   per-call usage, tool calls and answers) into a single `share.md`.
