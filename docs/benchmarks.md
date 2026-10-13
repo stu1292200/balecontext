@@ -4,34 +4,34 @@ This page shows every paid agent test we have run on BaleContext so far,
 including the weak and negative ones, how each test works, and how to repeat
 it yourself. It is updated as new runs come in.
 
-**Last updated:** 12 October 2026.
-
-> **Scope so far:** every result below is from **explanation questions** (one
-> question, or a conversation of three or four) on Django, requests and
-> Express. Bigger tasks, where plain Claude searches many more files over many
-> steps and where we expect savings near 90%, have not been run yet. They will
-> be added under [Bigger tasks](#bigger-tasks-not-run-yet).
+**Last updated:** 13 October 2026.
 
 ## The short version
 
+All numbers are whole-task totals on Claude Code with `sonnet`, BaleContext's
+prompt hook against plain Claude Code, same question and project. The answers
+were checked against the source and were equal in quality unless a row says
+otherwise.
+
+| Kind of task | Fewer tokens | Lower cost | Runs |
+|---|---|---|---|
+| Single questions and short conversations about how code works | 65–69% | about even (−1% to 9%) | 2 per test |
+| Long conversation (8 questions about Django) | **74%** | **35%** | 1 |
+| Editing tasks (fix a bug, add a feature), with the small pointer pack | 12–16% | 5–7% | 1 per task |
+| Editing tasks with the full evidence pack (first attempt) | **−50% to +15%** | **−41% to −7%** (more expensive) | 1 per task |
+
 1. **What we count:** the total tokens Claude Code reports for the whole task,
-   every model call included, with and without BaleContext, on the same
-   question, model and project. We never compare one search answer with the
-   size of the whole project.
-2. **Where we are:** on multi-question conversations about real projects
-   (Django, requests), the latest runs use **62% to 79% fewer total tokens**
-   than plain Claude Code, with answers that were checked line by line against
-   the source and found equally accurate (details below).
-3. **Where we are not yet:** the goal is about 90% fewer tokens. We have not
-   reached it on a whole conversation. The best single question so far saved
-   85% (226k to 34k tokens).
-4. **Cost is a different story:** Claude Code's own cost estimate falls much
-   less than tokens (from −3% to +27% savings in the latest runs), because
-   most of plain Claude's extra tokens are cheap cached re-reads. We report
-   both numbers.
-5. **Early results were worse:** the first BaleContext version made the task
-   **50% more expensive** in tokens, and the first Claude Code test with only
-   the BaleContext tools (no prompt hook) saved nothing. Both are in the table.
+   every model call included. We never compare one search answer with the size
+   of the whole project.
+2. **The 90% goal:** not reached for any kind of task in full. The best single
+   question saved 85% of tokens (226k to 34k).
+3. **Why cost falls less than tokens:** most of plain Claude's extra tokens are
+   cheap cached re-reads. The answer Claude writes is 40–50% of plain Claude's
+   cost on its own, and BaleContext keeps answers just as complete, so a 90% cost
+   saving is not reachable by any way of delivering evidence.
+4. **Negative results are included:** the first version used 50% more tokens,
+   the tools without the prompt hook saved nothing, and the full evidence pack
+   made editing tasks more expensive. All are in the tables below.
 
 ## Why "times smaller context" numbers are not used here
 
@@ -74,11 +74,12 @@ Step-by-step instructions are in [claude-code-test.md](claude-code-test.md).
    noted below. This review was done by us, not blind and not by an
    independent reviewer.
 
-Nothing in the project checkout is changed. Local indexing uses no model
-tokens; the hook's running time (about 2 to 4 seconds on Django) is reported
+Question tests change nothing in the project checkout; editing tasks are
+undone after every run. Local indexing uses no model
+tokens; the hook's running time (about 1 to 5 seconds) is reported
 separately in the project record.
 
-## Why short questions cannot reach 90%
+## Why the 90% goal is out of reach for most tasks
 
 Claude Code sends about **19,000 tokens of its own setup text on every model
 call** (about 10,000 of system prompt and tool definitions plus about 9,000 of
@@ -97,11 +98,20 @@ That matches what we measured: a short Django question went from about 89k to
 24k tokens (73%), while the hardest Django question went from 226k to 34k
 (85%).
 
+Two more limits apply:
+
+- **Editing tasks:** Claude must read every line it changes (the Edit tool
+  needs the exact text) and the test and doc files it updates. BaleContext can
+  only remove the search steps, so the saving is small.
+- **Cost:** the answer's own output tokens are 40–50% of plain Claude's cost.
+  Even with perfect evidence the cost of a task cannot fall below that.
+
 ## All paid runs so far (explanation questions)
 
 "Saving" is `1 − hook ÷ without`. A negative saving means BaleContext used
 more. Commits refer to the BaleContext version tested (on the development
-branch of [pull request #1](https://github.com/stu1292200/balecontext/pull/1)).
+branch of [pull request #1](https://github.com/stu1292200/balecontext/pull/1),
+now merged into `main`).
 
 ### Single questions
 
@@ -139,12 +149,16 @@ text. The fair reruns from 28b940d onward fixed this.
 | 12 Oct | 9b1da7b | requests, 4 questions | 2 | 449,222 | 166,175 | 63.0% | 7.9% | One question re-wrote Claude Code's cache in one run ($0.125 against $0.044). |
 | 12 Oct | 9b1da7b | Django, 3 hard questions | 2 | 694,121 | 142,734 | **79.4%** | **27.4%** | Best result so far. Hook slightly behind on question 1 (2 errors, both in code it said it had not seen). |
 | 12 Oct | 8a5c61a | Django, 3 hard questions | 2 | 543,861 | 178,067 | 67.3% | 17.6% | Answer citations checked, all correct so far. |
-| 12 Oct | 8a5c61a | Django, 3 "who calls / what breaks" questions | 2 | 228,078 | 86,726 | 62.0% | **−2.9%** | Fewer tokens but slightly more cost: the hook's evidence is written to cache once, and plain Claude needed less reading here. |
+| 12 Oct | 8a5c61a | Django, 3 "who calls / what breaks" questions | 2 | 228,078 | 86,726 | 62.0% | **−2.9%** | Fewer tokens but slightly more cost: Claude Code re-sent the first question's evidence as new text on the second question (see Limits). |
+| 12 Oct | 93b4002 | Django, 3 hard questions | 2 | 483,642 | 148,038 | 69.4% | 9.3% | Every hook question one model call. Questions 1 and 2 more complete than plain Claude, question 3 equal. |
+| 12 Oct | 1d33647 | Django, 3 "who calls" questions | 2 | 256,416 | 89,515 | 65.1% | **−1.4%** | The cache re-send happened again and cost $0.054 of $0.196. All citations right; question 2 thinner than plain Claude on what would break. |
+| 12 Oct | 1d33647 | same, with every request logged | 1 | 396,366 | 133,437 | 66.3% | 30.9% | Logged to find the cache re-send (see Limits). |
 
 ### Raw results
 
-The full results of the eight conversation tests from 12 October, with every
-model call, every tool call and both arms' complete answers, are in
+The full results of the conversation tests from 12 October and the bigger
+tasks from 13 October, with every model call, every tool call, both arms'
+complete answers and, for editing tasks, both arms' code changes, are in
 [`benchmarks/results/`](../benchmarks/results/). Local folder paths were
 replaced with `<checkout>`; nothing else was changed. Earlier runs were kept
 only as console summaries, so only their numbers are shown here.
@@ -182,17 +196,32 @@ tokens are almost all cache reads (re-sending the growing conversation on each
 step), which are priced at about a tenth of normal input. Cache writes and the
 answer itself cost about the same in both arms.
 
-## Bigger tasks (not run yet)
+## Bigger tasks
 
-This section will hold the results for bigger tasks: questions and changes
-where plain Claude Code needs ten or more steps, and later bug fixes and small
-features that must pass the project's tests. They will be measured the same
-way as above (same model and prompt, whole-task totals, every run reported,
-answers checked against the source).
+Run on 13 October, one run each (sonnet, version d543f80 unless noted). The
+editing tasks let Claude edit files (no shell). A planted bug is put back
+before each run, and the checkout is reset after it. Task files and notes on
+what a correct result looks like are in [`benchmarks/tasks/`](../benchmarks/tasks/).
 
-| Date | Version | Project, task | Runs | Without (median tokens) | BaleContext | Token saving | Cost saving | Notes |
-|---|---|---|---|---|---|---|---|---|
-| | | *No runs yet* | | | | | | |
+| Version | Project, task | Without (tokens) | BaleContext | Token saving | Cost saving | Notes |
+|---|---|---|---|---|---|---|
+| d543f80 | Django, 8-question conversation (read only) | 2,077,821 (78 steps, $0.817) | 536,507 (8 steps, $0.530) | **74.2%** | **35.2%** | One model call per question with BaleContext. |
+| d543f80 | Django, fix a planted middleware-order bug | 121,533 | 153,149 | **−26.0%** | **−37.2%** | Full evidence pack. Both sides fixed the bug correctly. |
+| d543f80 | requests, fix a planted `merge_setting` bug | 98,091 | 147,675 | **−50.5%** | **−40.5%** | Full evidence pack. Both fixed it correctly. |
+| d543f80 | Django, add an option to `listurls` | 190,644 | 161,571 | 15.2% | **−7.4%** | Full evidence pack. Both completed it with docs, release note and tests. |
+| d543f80 | requests, add `Session.timeout` | 193,717 | 196,844 | **−1.6%** | **−32.8%** | Full evidence pack. Both completed it. |
+| ec5381a | Django, add an option to `listurls` | 162,990 | 137,448 | 15.7% | 6.6% | Pointer pack (file and line pointers only, about 1.5k characters). |
+| ec5381a | Django, fix the middleware-order bug | 169,499 | 149,493 | 11.8% | 4.5% | Pointer pack. Both fixed it and added a test. |
+
+Why the full evidence pack lost on editing tasks: it added 30–40k characters of
+source up front, but Claude still had to read the exact lines it edited and the
+test and doc files the pack did not cover, so it took almost as many steps as
+without BaleContext. Since version ec5381a, prompts that ask to change code get
+a short list of where things are (file, line range, name) instead of source.
+That turned the loss into a small gain.
+
+These are single runs, so treat them as first measurements, not settled
+numbers.
 
 ## Offline relevance checks (no model calls)
 
@@ -223,24 +252,31 @@ We judge quality by reading the answers, not by tokens.
   complete than the plain one, and in one run it made 2 errors, both in code
   it said it had not seen. Each gap was addressed in the next version and is
   listed in the table notes.
+- **Later Django runs (93b4002 onward):** hook citations were right in every
+  answer checked. On the hard questions BaleContext's answers were equal or
+  more complete. On "what would break" questions they were thinner than plain
+  Claude's.
+- **Editing tasks:** all diffs were read. Both sides fixed both planted bugs
+  correctly and completed both features with docs, release notes and tests.
 - **Not done yet:** blind review by someone who does not know which arm wrote
-  which answer, and coding tasks that change files and must pass tests.
+  which answer.
 
 ## Limits of this evidence
 
-- One model (`sonnet` in Claude Code), one person's machine, 2 to 3 runs per
+- One model (`sonnet` in Claude Code), one person's machine, 1 to 3 runs per
   test. Variation between runs is large (for example plain Claude used 450k
   and 637k tokens on the same conversation).
-- Explanation questions only. Bug fixes and new features have not been tested
-  yet; we expect smaller savings there because edits and test output must still
-  pass through the model.
+- Only four editing tasks, one run each, and no shell access (so no test runs
+  inside the task).
 - Cost is Claude Code's own estimate at API prices. How a subscription plan
   counts usage is up to the provider; we report tokens and estimated cost, not
   a promise about plan limits.
 - Some cost spikes come from Claude Code re-writing its prompt cache on a
-  follow-up question in some runs. Our tracing points to Claude Code's own
-  requests rather than BaleContext, but this is not confirmed, and we have not
-  removed those runs from the totals.
+  follow-up question in some runs (about $0.05 each time). Logging every
+  request showed that both sides send the same text in the same way and only
+  the BaleContext side missed the cache, so we treat it as Claude Code
+  behaviour, not something BaleContext sends differently. Those runs stay in
+  the totals.
 - The project is still changing quickly, so older rows describe older versions.
 
 ## Repeat it yourself
@@ -271,6 +307,8 @@ are willing to spend on about 2 to 6 Claude Code tasks per run.
    each question's tokens and cost, every model call and tool call, and both
    arms' answers side by side.
 
+Editing tasks use `--allow-edits` and, for planted bugs, `--setup-patch`; see
+[claude-code-test.md](claude-code-test.md) and [`benchmarks/tasks/`](../benchmarks/tasks/).
 Other question files are in [`benchmarks/questions/`](../benchmarks/questions/):
 requests (`611c616`), Express (`a419aa7`) and Django. To check retrieval
 without spending any tokens, run

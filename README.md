@@ -19,8 +19,8 @@ the general idea of graph-assisted code navigation. It is not affiliated with Gr
 
 **Status: v0.1.0 alpha.** Core CLI and MCP protocol tests are automated. Live
 integration tests in individual agent applications are still pending. Early
-paired Claude Code tests on explanation questions measured 62–79% fewer total
-tokens per conversation, with smaller cost savings; see
+paired Claude Code tests measured 65–74% fewer total tokens on questions about
+code and 12–16% on editing tasks, with smaller cost savings; see
 [the evidence](docs/benchmarks.md). The 90–95% total-token reduction is a
 research target, not a measured result or guarantee.
 
