@@ -23,13 +23,10 @@ otherwise.
 1. **What we count:** the total tokens Claude Code reports for the whole task,
    every model call included. We never compare one search answer with the size
    of the whole project.
-2. **The 90% goal:** not reached for any kind of task in full. The best single
-   question saved 85% of tokens (226k to 34k).
-3. **Why cost falls less than tokens:** most of plain Claude's extra tokens are
-   cheap cached re-reads. The answer Claude writes is 40–50% of plain Claude's
-   cost on its own, and BaleContext keeps answers just as complete, so a 90% cost
-   saving is not reachable by any way of delivering evidence.
-4. **Negative results are included:** the first version used 50% more tokens,
+2. **Why cost falls less than tokens:** most of plain Claude's extra tokens
+   are cached re-reads of the conversation, which are cheap. The answer itself
+   costs about the same with or without BaleContext.
+3. **Negative results are included:** the first version used 50% more tokens,
    the tools without the prompt hook saved nothing, and the full evidence pack
    made editing tasks more expensive. All are in the tables below.
 
@@ -78,33 +75,6 @@ Question tests change nothing in the project checkout; editing tasks are
 undone after every run. Local indexing uses no model
 tokens; the hook's running time (about 1 to 5 seconds) is reported
 separately in the project record.
-
-## Why the 90% goal is out of reach for most tasks
-
-Claude Code sends about **19,000 tokens of its own setup text on every model
-call** (about 10,000 of system prompt and tool definitions plus about 9,000 of
-first-turn context, in these runs). That floor is the same with or without
-BaleContext.
-
-- The best BaleContext can do is answer a question in **one** model call:
-  about 19k setup + the evidence + the answer, roughly 24k to 35k tokens.
-- Plain Claude Code answers a short question in about 4 to 7 calls, so it
-  uses about 90k tokens. 24k against 90k is a saving of about 73%.
-- A 90% saving needs plain Claude to take about ten times the tokens of the
-  BaleContext run, which happens on bigger tasks where it searches many files
-  over ten or more steps.
-
-That matches what we measured: a short Django question went from about 89k to
-24k tokens (73%), while the hardest Django question went from 226k to 34k
-(85%).
-
-Two more limits apply:
-
-- **Editing tasks:** Claude must read every line it changes (the Edit tool
-  needs the exact text) and the test and doc files it updates. BaleContext can
-  only remove the search steps, so the saving is small.
-- **Cost:** the answer's own output tokens are 40–50% of plain Claude's cost.
-  Even with perfect evidence the cost of a task cannot fall below that.
 
 ## All paid runs so far (explanation questions)
 
