@@ -1,100 +1,90 @@
 <p align="center">
-  <img src="docs/brand.svg" width="720" alt="BaleContext — Local project knowledge for AI coding agents">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/logo/banner-dark.svg">
+    <img src="docs/logo/banner-light.svg" width="560" alt="BaleContext: a sheaf, many stalks tied into one small bundle. Free, runs on your computer, open source.">
+  </picture>
 </p>
+
+<h1 align="center">Make your Claude limit last longer.</h1>
 
 <p align="center">
-  <strong>Give your coding agent the right source, without rediscovering your project every session.</strong><br>
-  Local indexing · Source-backed retrieval · Dependency graphs · MCP · MIT
+  <strong>Don't lose your session to the limit.</strong>
+  BaleContext finds the right code on your own computer and gives Claude just
+  what it needs, with file and line, so it reads less.
 </p>
-
-# BaleContext
-
-BaleContext builds a reusable map of your code and text documents, then gives
-coding agents focused source excerpts and relationships. Everything runs on
-your computer. No LLM is used for indexing or retrieval. No API key, cloud
-account, subscription, embedding download, or telemetry is required.
-
-Created by **Muhammad Baleegh**. This is an original implementation.
 
 [![Claude with BaleContext uses less and costs less: 74% less usage in long chats, 68% on questions about code, 14% on bug fixes and features](docs/results-chart.svg)](docs/benchmarks.md)
 
-[See all 18 tests and how we got here](docs/benchmarks.md#how-we-got-here)
+<p align="center">
+  Tested on real projects. <a href="docs/benchmarks.md#how-we-got-here">See all 18 tests, including the ones we lost.</a>
+</p>
 
-**Status: v0.1.0 alpha.** Core CLI and MCP protocol tests are automated. Live
-integration tests in individual agent applications are still pending. Early
-paired Claude Code tests measured 65–74% fewer total tokens on questions about
-code and 12–16% on editing tasks, with smaller cost savings; see
-[the evidence](docs/benchmarks.md).
+## Start in 3 commands
 
-The source checkout now also includes automatic background refresh and stricter
-benchmark quality checks. These changes are **unreleased**; the v0.1.0 download
-below refreshes on requests and provides a manually started watcher.
-
-## Install
-
-Requires Python 3.11 or newer. Install the alpha release with JavaScript/TypeScript support:
+You need Python 3.11 or newer and Git. Run these inside your project:
 
 ```sh
-python -m pip install "balecontext[code] @ https://github.com/stu1292200/balecontext/releases/download/v0.1.0/balecontext-0.1.0-py3-none-any.whl"
-```
-
-Or, from a downloaded or cloned source checkout:
-
-```sh
-python -m pip install ".[code]"
-```
-
-The `code` extra adds JavaScript/TypeScript parsers. For Python and text-only
-projects, `python -m pip install .` has **zero runtime dependencies**.
-If your terminal cannot find `balecontext`, use `python -m balecontext` instead.
-The package has not yet been published to PyPI; a bare `pip install balecontext`
-is not an installation path for this release.
-
-## First project
-
-Run these commands in the project you want your agent to understand:
-
-```sh
+python -m pip install "balecontext[code] @ git+https://github.com/stu1292200/balecontext"
 balecontext index
-balecontext query "Where are session tokens validated?" --budget 2000
-balecontext export
+balecontext install claude --hook
 ```
 
-Open `.balecontext/graph.html` to explore the interactive graph. The export is
-fully self-contained and works offline. It also produces `graph.json` and
-`REPORT.md`. The viewer shows up to 320 matching nodes at a time for responsiveness;
-the JSON export contains the full indexed graph.
+Then restart Claude Code in that project. That's it.
 
-To try the included demo from this checkout:
+- **Free.** MIT licensed. No account, no API key, no subscription.
+- **Runs on your computer.** BaleContext never uploads your code and has no telemetry.
+- **Makes no AI calls of its own.** Indexing and search are plain local code.
+
+If your terminal can't find `balecontext`, use `python -m balecontext` instead.
+
+## What it does
+
+Without help, a coding agent spends much of its limit **searching and
+rereading** your files to find where things are.
+
+BaleContext reads your project once and keeps a small local map of it. When you
+ask Claude something, BaleContext hands over the matching code first, with the
+file name and line numbers. Claude starts from the right place, so it opens fewer
+files and makes fewer steps.
+
+You keep working the same way. You just type your question.
+
+## The results, wins and losses
+
+Same model, same task, same project, run twice: once with plain Claude Code and
+once with BaleContext. We count every token of the whole task.
+
+| Kind of task | Fewer tokens | Lower cost |
+|---|---|---|
+| Long chat (8 questions about Django) | **74%** | **35%** |
+| Questions about how code works | **68%** | **5%** |
+| Bug fixes and new features | **14%** | **6%** |
+
+- **Cost falls less than tokens.** Most of what plain Claude rereads is cached,
+  and cached tokens are cheap. The usage limit still counts them.
+- **We lost some tests too.** An earlier version made editing tasks cost up to
+  41% more. Without the prompt hook, the tools alone saved nothing. Both results
+  are on [the evidence page](docs/benchmarks.md), with every run.
+- **These are early numbers.** Most tests ran once or twice. Claude Code with the
+  `--hook` setup is the only setup measured so far.
+
+## Status
+
+**Alpha.** The core commands and the MCP server have automated tests. The
+results above come from the current source on GitHub, which is what the 3
+commands install. The older v0.1.0 download does not include the prompt hook.
+
+## Other agents
+
+BaleContext also connects to Codex, Gemini CLI and Cursor as a local MCP server.
+We have **not measured savings** there yet. Run one installer in your project,
+then restart that agent:
 
 ```sh
-balecontext index --root examples/shop
-balecontext query "validate session token" --root examples/shop
-balecontext related validate_token --direction callers --root examples/shop
-balecontext path login validate_token --root examples/shop
-balecontext export --root examples/shop
-```
-
-## Connect your agent
-
-Run **one** installer in your application project, then restart that agent:
-
-```sh
-balecontext install claude
 balecontext install codex
 balecontext install gemini
 balecontext install cursor
 ```
-
-Each installer edits project-scoped configuration, preserves other MCP servers,
-backs up modified files, and adds a short instruction block. Use `--dry-run`
-to preview. An existing BaleContext entry with different settings is left
-untouched and reported for manual review. Project trust prompts remain the
-client's responsibility.
-
-The installer stores the absolute interpreter and project paths so the client
-starts the right environment. These generated settings and backups are local
-machine data: review before committing them. Re-run setup on another machine.
 
 These are **configuration adapters**, not claims of completed end-to-end tests
 in every client. See [the compatibility matrix](docs/agents.md).
@@ -116,6 +106,60 @@ Once connected, try:
 > Use BaleContext to find the session-token validation code and its callers.
 > Cite source locations. Read additional source if the excerpts are incomplete.
 
+## Privacy
+
+Everything stays in a `.balecontext/` folder in your project. Secrets files,
+`.env` files, private keys, build output and dependencies are skipped. This is
+**not a complete secret detector**, so treat that folder as private.
+[Full details below](#privacy-and-exclusions).
+
+## Explore your project
+
+```sh
+balecontext query "Where are session tokens validated?" --budget 2000
+balecontext export
+```
+
+Open `.balecontext/graph.html` to explore an interactive map of your code. It
+works offline. The export also writes `graph.json` and `REPORT.md`. The viewer
+shows up to 320 matching nodes at a time; the JSON has the full graph.
+
+To try the included demo from this checkout:
+
+```sh
+balecontext index --root examples/shop
+balecontext query "validate session token" --root examples/shop
+balecontext related validate_token --direction callers --root examples/shop
+balecontext path login validate_token --root examples/shop
+balecontext export --root examples/shop
+```
+
+---
+
+## Technical details
+
+### How the prompt hook works
+
+`balecontext install claude --hook` adds BaleContext to `.mcp.json`, adds a short
+note to `CLAUDE.md`, and adds a Claude Code hook to `.claude/settings.json`. On
+each prompt the hook looks up the matching code and hands it to Claude before it
+starts. When a prompt asks to change code, it sends a short list of where things
+are (file, line range, name) instead of the source. Use `--dry-run` to preview.
+
+### What the installers change
+
+Each installer edits project-scoped configuration, preserves other MCP servers,
+backs up modified files, and adds a short instruction block. Use `--dry-run`
+to preview. An existing BaleContext entry with different settings is left
+untouched and reported for manual review. Project trust prompts remain the
+client's responsibility.
+
+The installer stores the absolute interpreter and project paths so the client
+starts the right environment. These generated settings and backups are local
+machine data: review before committing them. Re-run setup on another machine.
+
+### Agent tools
+
 Five tools are exposed: `balecontext_context`, `balecontext_expand`,
 `balecontext_related`, `balecontext_read`, and `balecontext_status`. They do not
 edit your source files or run shell commands. The local SQLite cache refreshes
@@ -127,7 +171,7 @@ source with line numbers), and a `COVERAGE: COMPLETE` or `PARTIAL` verdict. The
 first response is capped at 4,000 estimated tokens. Missing pieces are fetched by
 id with `balecontext_expand` instead of re-reading whole files.
 
-### Automatic project updates (unreleased source)
+### Automatic project updates
 
 With the current source checkout, connecting an agent starts background indexing
 automatically. While that connection stays open, the server checks for edits,
@@ -145,7 +189,7 @@ reduce scanning frequency, or add `--no-watch` to keep only per-request refresh.
 This implementation polls file contents; it is not yet a filesystem-event watcher
 and large-repository performance has not been benchmarked.
 
-## What you get
+### What you get
 
 | Capability | Behavior |
 |---|---|
@@ -169,7 +213,7 @@ complex object receivers, re-exports, wildcard imports, tsconfig aliases, and
 dynamic imports may be unresolved. The viewer's groups are connected components,
 not semantic communities or an LLM's interpretation of architecture.
 
-## Useful commands
+### Useful commands
 
 ```sh
 balecontext doctor
@@ -187,7 +231,7 @@ to 200 lines at a time. Ambiguous symbol names require a node ID returned by
 search. If a query misses evidence, broaden it or use your agent's ordinary
 search and source reads. Preserve that fallback to protect answer quality.
 
-## Privacy and exclusions
+### Privacy and exclusions
 
 The index lives in `.balecontext/`. Dependencies, build outputs, `.git`, `.env*`,
 common credential filenames, private-key formats, binary files, linked files,
@@ -212,7 +256,7 @@ Retrieved source, documentation and saved notes are **untrusted evidence**,
 not new instructions for an agent. Automatic indexing writes only the local
 cache. Configuration changes happen only through an explicit `install` command.
 
-## Token savings and quality
+### Token counting
 
 BaleContext aims to reduce repeated reading and discovery while preserving
 source evidence. `--budget` caps retrieved **text** using a UTF-8-bytes/4 heuristic.
@@ -231,7 +275,25 @@ but failed with it, even when another task improves. Optional elapsed-time
 measurements include local setup time; missing measurements are reported as
 unrecorded. See [the first evaluation plan](benchmarks/first-evaluation.md).
 
-## Development
+### Other ways to install
+
+The v0.1.0 release (without the prompt hook):
+
+```sh
+python -m pip install "balecontext[code] @ https://github.com/stu1292200/balecontext/releases/download/v0.1.0/balecontext-0.1.0-py3-none-any.whl"
+```
+
+From a downloaded or cloned source checkout:
+
+```sh
+python -m pip install ".[code]"
+```
+
+The `code` extra adds JavaScript/TypeScript parsers. For Python and text-only
+projects, `python -m pip install .` has **zero runtime dependencies**. The
+package is not on PyPI yet, so a bare `pip install balecontext` does not work.
+
+### Development
 
 ```sh
 python -m pip install ".[code]"
@@ -249,5 +311,5 @@ efficiency improvements are especially welcome.
 
 ## License
 
-[MIT](LICENSE) · Copyright 2026 Muhammad Baleegh.
-Third-party dependencies retain their own licenses.
+[MIT](LICENSE) · Copyright 2026 Muhammad Baleegh. BaleContext is an original
+implementation. Third-party dependencies retain their own licenses.

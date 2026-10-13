@@ -2,6 +2,9 @@
 
 ## Unreleased — ranking and evidence packs
 
+- New logo (a sheaf: many stalks tied into one small bundle) in light and dark versions, a
+  share image, and a plain-language README. Its quick start now includes `--hook`, which the
+  measured savings need, and installs from GitHub because the v0.1.0 download has no hook.
 - Pointer pack for tasks that change code: a prompt written as an instruction to fix, add,
   implement or rename (not a question, and not one that says "do not modify") gets about
   1.5 to 2.5k characters of pointers instead of source: the definitions an evidence pack would
