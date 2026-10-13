@@ -16,6 +16,8 @@ account, subscription, embedding download, or telemetry is required.
 
 Created by **Muhammad Baleegh**. This is an original implementation.
 
+[![Whole-task tokens and cost, plain Claude Code against Claude Code with BaleContext](docs/results-chart.svg)](docs/benchmarks.md)
+
 **Status: v0.1.0 alpha.** Core CLI and MCP protocol tests are automated. Live
 integration tests in individual agent applications are still pending. Early
 paired Claude Code tests measured 65–74% fewer total tokens on questions about

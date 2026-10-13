@@ -284,4 +284,7 @@ requests (`611c616`), Express (`a419aa7`) and Django. To check retrieval
 without spending any tokens, run
 `python benchmarks/relevance.py django-test benchmarks/relevance/django.json`.
 
+The chart at the top of the README is drawn from the files in
+`benchmarks/results/` by `python benchmarks/make_chart.py` (no model calls).
+
 If your numbers differ from ours, please open an issue with your `share.md`.

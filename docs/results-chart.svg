@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="860" height="418" viewBox="0 0 860 418" role="img" aria-labelledby="t d" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif">
+<title id="t">BaleContext against plain Claude Code: whole-task tokens and cost</title>
+<desc id="d">Grouped bars per kind of task, plain Claude Code against Claude Code with BaleContext.</desc>
+<style>
+.bg{fill:#fcfcfb}.t1{fill:#0b0b0b}.t2{fill:#52514e}.plain{fill:#8a8984}.bale{fill:#2a78d6}.rule{stroke:#e4e3df}
+.big{fill:#2a78d6}
+@media (prefers-color-scheme: dark){.bg{fill:#1a1a19}.t1{fill:#f0efec}.t2{fill:#c3c2b7}.plain{fill:#77766f}.bale{fill:#3987e5}.big{fill:#5598e7}.rule{stroke:#383835}}
+</style>
+<rect class="bg" width="860" height="418" rx="12"/>
+<text class="big" x="24" y="52" font-size="34" font-weight="700">74% fewer tokens · 35% lower cost</text>
+<text class="t2" x="24" y="78" font-size="15">Long conversation (8 questions about Django), whole task, same model and prompts</text>
+<rect class="plain" x="230" y="98" width="12" height="12" rx="2"/>
+<text class="t1" x="248" y="109" font-size="13">Plain Claude Code</text>
+<rect class="bale" x="380" y="98" width="12" height="12" rx="2"/>
+<text class="t1" x="398" y="109" font-size="13">With BaleContext</text>
+<text class="t2" x="230" y="128" font-size="12" font-weight="600">TOTAL TOKENS</text>
+<text class="t2" x="550" y="128" font-size="12" font-weight="600">COST (CLAUDE CODE ESTIMATE)</text>
+<line class="rule" x1="24" x2="836" y1="134" y2="134"/>
+<text class="t1" x="24" y="158" font-size="15" font-weight="600">Long conversation</text>
+<text class="t2" x="24" y="176" font-size="12">8 questions about Django</text>
+<rect class="plain" x="230" y="146" width="180.0" height="18" rx="4"/>
+<text class="t1" x="416.0" y="159" font-size="12">2.08M</text>
+<rect class="bale" x="230" y="168" width="46.5" height="18" rx="4"/>
+<text class="t1" x="282.5" y="181" font-size="12">537k  (74% less)</text>
+<rect class="plain" x="550" y="146" width="180.0" height="18" rx="4"/>
+<text class="t1" x="736.0" y="159" font-size="12">$0.82</text>
+<rect class="bale" x="550" y="168" width="116.6" height="18" rx="4"/>
+<text class="t1" x="672.6" y="181" font-size="12">$0.53  (35% less)</text>
+<line class="rule" x1="24" x2="836" y1="206" y2="206"/>
+<text class="t1" x="24" y="230" font-size="15" font-weight="600">Questions about code</text>
+<text class="t2" x="24" y="248" font-size="12">6 Django questions</text>
+<rect class="plain" x="230" y="218" width="180.0" height="18" rx="4"/>
+<text class="t1" x="416.0" y="231" font-size="12">740k</text>
+<rect class="bale" x="230" y="240" width="57.8" height="18" rx="4"/>
+<text class="t1" x="293.8" y="253" font-size="12">238k  (68% less)</text>
+<rect class="plain" x="550" y="218" width="180.0" height="18" rx="4"/>
+<text class="t1" x="736.0" y="231" font-size="12">$0.51</text>
+<rect class="bale" x="550" y="240" width="170.5" height="18" rx="4"/>
+<text class="t1" x="726.5" y="253" font-size="12">$0.49  (5% less)</text>
+<line class="rule" x1="24" x2="836" y1="278" y2="278"/>
+<text class="t1" x="24" y="302" font-size="15" font-weight="600">Editing tasks</text>
+<text class="t2" x="24" y="320" font-size="12">fix a bug, add a feature</text>
+<rect class="plain" x="230" y="290" width="180.0" height="18" rx="4"/>
+<text class="t1" x="416.0" y="303" font-size="12">332k</text>
+<rect class="bale" x="230" y="312" width="155.3" height="18" rx="4"/>
+<text class="t1" x="391.3" y="325" font-size="12">287k  (14% less)</text>
+<rect class="plain" x="550" y="290" width="180.0" height="18" rx="4"/>
+<text class="t1" x="736.0" y="303" font-size="12">$0.27</text>
+<rect class="bale" x="550" y="312" width="169.8" height="18" rx="4"/>
+<text class="t1" x="725.8" y="325" font-size="12">$0.26  (6% less)</text>
+<text class="t2" x="24" y="366" font-size="12">Claude Code with sonnet, totals of every model call. Answers and code changes were checked against the source;</text>
+<text class="t2" x="24" y="383" font-size="12">one answer was thinner than plain Claude's. All runs, including weaker and negative ones: docs/benchmarks.md</text>
+<text class="t2" x="24" y="400" font-size="11">Drawn by benchmarks/make_chart.py from benchmarks/results/.</text>
+</svg>
