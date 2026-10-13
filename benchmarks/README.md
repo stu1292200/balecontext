@@ -65,7 +65,14 @@ criteria. Results of the paired Claude Code tests are in [docs/benchmarks.md](..
 `benchmarks/claude_pair.py` asks Claude Code the same question with and without
 BaleContext, alternating order, with identical models and read-only tools, and
 records whole-task tokens from Claude Code's own JSON result. Answers are saved
-side by side for a person to judge. Steps: [docs/claude-code-test.md](../docs/claude-code-test.md).
+side by side for a person to judge. Steps: [docs/claude-code-test.md](../docs/claude-code-test.md). Bigger tasks (planted bugs and features that let Claude edit files) are in `benchmarks/tasks/`, with notes on what a correct result looks like.
+
+To see exactly what Claude Code sends to the model, run `py benchmarks\wire_log.py results\wire`
+in one window and `set ANTHROPIC_BASE_URL=http://127.0.0.1:8787` in the window that runs the
+test. Each request body is saved as JSON with the token usage the model reported; the login
+headers are forwarded, not written. `py benchmarks\wire_report.py results\wire` then shows, per
+request, the shape of its messages and the first point where it stops matching the previous
+request, which is what the prompt cache sees.
 
 ## Offline relevance check (no model calls)
 

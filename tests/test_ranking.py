@@ -551,7 +551,9 @@ class ResolveTest(unittest.TestCase):
         # A test that calls it is listed before one that only imports it.
         self.assertLess(text.index("tests/test_settings.py:5 test_merge:"), text.index("tests/test_settings.py:1:"))
         self.assertEqual(response["verdict"], "COMPLETE")
-        self.assertIn("2 definitions in the code call it (3 call lines); 1 other line in the code names it; 2 lines in tests; 1 line in docs (not listed)", text)
+        self.assertIn("2 definitions in the code call it (3 call lines); 1 other line in the code names it; 2 lines in tests; 1 line in docs", text)
+        # A doc line can say what a change breaks for users, so a few are shown.
+        self.assertIn("=== DOCS naming merge_setting (one line each)\ndocs/api.md:3: merge_setting merges two dicts.", text)
 
     def test_a_long_caller_is_shown_around_its_call_and_an_unknown_receiver_is_listed(self):
         temporary = tempfile.TemporaryDirectory(prefix="balecontext-callsite-")
@@ -565,7 +567,7 @@ class ResolveTest(unittest.TestCase):
         self.assertIn('"role": "calls go at line 32"', text)
         self.assertIn("32:     result = runner.go()", text)
         self.assertNotIn("total_10 = len(items) + 10", text)
-        self.assertIn("[Excerpt ends around each call: lines of long_job away from its calls to go are not shown.]", text)
+        self.assertIn("[Excerpt: lines of long_job away from its calls to go, and from what it does with their result, are not shown.]", text)
         self.assertIn("=== POSSIBLE CALLS of go (receiver type not known; one line each)\nrunner.py:7 drive: return task.go()", text)
         self.assertEqual(response["verdict"], "COMPLETE")
 
@@ -609,6 +611,78 @@ class ResolveTest(unittest.TestCase):
         for question in ("What calls does Session.send make?", "How does Session.send work?", "Trace how Django handles a request",
                          "What does resolve_redirects call?"):
             self.assertFalse(CALLERS_QUESTION.search(question), question)
+
+    def test_a_long_caller_shows_what_it_does_with_the_result(self):
+        temporary = tempfile.TemporaryDirectory(prefix="balecontext-result-")
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        handle = ("def handle(environ):\n    handler = Handler()\n" + "".join(f"    step_{i} = {i}\n" for i in range(20))
+                  + "    response = handler.get_response(environ)\n    log(response.status_code)\n" + "".join(f"    step_{i} += 1\n" for i in range(8))
+                  + "    response.close()\n    return response\n")
+        (root / "handlers.py").write_text("class Handler:\n    def get_response(self, environ):\n        return Response(environ)\n\n\n" + handle, encoding="utf-8")
+        response = context(Project(root), "What would break if I changed what Handler.get_response returns?")
+        text = response["text"]
+        self.assertIn("28:     response = handler.get_response(environ)", text)
+        # The lines soon after the call that use its result are shown; the rest of the long caller is not.
+        self.assertIn("38:     response.close()", text)
+        self.assertIn("39:     return response", text)
+        self.assertNotIn("step_5 += 1", text)
+        self.assertNotIn("step_10 = 10", text)
+
+    def test_the_async_counterpart_of_a_method_is_covered_by_a_callers_question(self):
+        temporary = tempfile.TemporaryDirectory(prefix="balecontext-twin-")
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        (root / "handlers.py").write_text(
+            "class Handler:\n    def get_response(self, request):\n        return self.chain(request)\n\n"
+            "    async def get_response_async(self, request):\n        return await self.chain(request)\n\n\n"
+            "class WSGIHandler(Handler):\n    def __call__(self, environ):\n        return self.get_response(environ)\n\n\n"
+            "class ASGIHandler(Handler):\n    async def run(self, scope):\n        response = await self.get_response_async(scope)\n        return response\n",
+            encoding="utf-8")
+        response = context(Project(root), "What would break if I changed what Handler.get_response returns?")
+        text = response["text"]
+        self.assertIn('"name": "Handler.get_response_async", "kind": "method", "role": "counterpart of get_response in Handler (the same method for the other of sync and async)"', text)
+        self.assertIn("=== LINES NAMING get_response_async, the counterpart of get_response (one line each)\n"
+                      "handlers.py:16 ASGIHandler.run: response = await self.get_response_async(scope)", text)
+        self.assertIn("1 line names its counterpart get_response_async", text)
+        self.assertEqual(response["verdict"], "COMPLETE")
+
+    def test_a_library_test_client_counts_as_code_a_change_would_break(self):
+        temporary = tempfile.TemporaryDirectory(prefix="balecontext-support-")
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        (root / "pkg" / "test").mkdir(parents=True)
+        (root / "tests").mkdir()
+        (root / "pkg" / "__init__.py").write_text("", encoding="utf-8")
+        (root / "pkg" / "handlers.py").write_text("class Handler:\n    def get_response(self, request):\n        return request\n", encoding="utf-8")
+        (root / "pkg" / "test" / "client.py").write_text(
+            "from pkg.handlers import Handler\n\n\nclass ClientHandler(Handler):\n    def __call__(self, environ):\n"
+            "        response = self.get_response(environ)\n        response.wsgi_request = environ\n        return response\n", encoding="utf-8")
+        (root / "tests" / "test_client.py").write_text(
+            "from pkg.handlers import Handler\n\n\ndef test_get_response():\n    assert Handler().get_response(1) == 1\n", encoding="utf-8")
+        response = context(Project(root), "Who calls Handler.get_response?")
+        text = response["text"]
+        # The test client ships with the library, so it is shown as a caller; the test tree stays one line each.
+        self.assertIn('"path": "pkg/test/client.py", "lines": [5, 8], "name": "ClientHandler.__call__", "kind": "method", "role": "calls get_response at line 6"', text)
+        self.assertIn("=== TESTS naming get_response (one line each)\ntests/test_client.py:5 test_get_response:", text)
+        self.assertIn("1 definition in the code calls it (1 call line)", text)
+
+    def test_a_constructor_that_runs_a_shown_method_is_sent_with_the_entry(self):
+        temporary = tempfile.TemporaryDirectory(prefix="balecontext-running-")
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        (root / "handlers.py").write_text(
+            "class BaseHandler:\n    def load_middleware(self):\n        chain = self._get_response\n        for layer in reversed(self.layers):\n"
+            "            chain = layer(chain)\n        self._middleware_chain = chain\n\n"
+            "    def get_response(self, request):\n        return self._middleware_chain(request)\n\n"
+            "    def _get_response(self, request):\n        return request.view(request)\n\n\n"
+            "class WSGIHandler(BaseHandler):\n    request_class = dict\n\n    def __init__(self, layers):\n        super().__init__()\n"
+            "        self.layers = layers\n        self.load_middleware()\n\n"
+            "    def __call__(self, environ):\n        request = self.request_class(environ)\n        return self.get_response(request)\n", encoding="utf-8")
+        response = context(Project(root), "Trace how WSGIHandler.__call__ handles a request", budget=6000)
+        text = response["text"]
+        self.assertIn("BaseHandler.load_middleware", text)
+        self.assertIn('"name": "WSGIHandler.__init__", "kind": "method", "role": "constructor of WSGIHandler; calls load_middleware when the object is made"', text)
 
     def test_tags_the_question_names_lead_and_calls_resolve_near_the_caller(self):
         temporary = tempfile.TemporaryDirectory(prefix="balecontext-tags-")
@@ -953,6 +1027,33 @@ class HookTest(unittest.TestCase):
         # A word the question does not write as a name gets no pack.
         self.assertIsNone(hook.prompt_pack(project, "Where is the compose step used?"))
 
+    def test_a_task_that_changes_code_gets_pointers_not_source(self):
+        (self.root / "shop" / "handlers.py").parent.mkdir(exist_ok=True)
+        (self.root / "shop" / "handlers.py").write_text(
+            "class BaseHandler:\n    def __init__(self):\n        self.hooks = []\n\n    def load_middleware(self):\n        for middleware in settings.MIDDLEWARE:\n"
+            "            mw = middleware()\n            if hasattr(mw, \"process_view\"):\n                self.hooks.append(mw.process_view)\n", encoding="utf-8")
+        (self.root / "tests").mkdir(exist_ok=True)
+        (self.root / "docs").mkdir(exist_ok=True)
+        (self.root / "tests" / "test_handlers.py").write_text("def test_load_middleware():\n    BaseHandler().load_middleware()\n", encoding="utf-8")
+        (self.root / "docs" / "handlers.txt").write_text("load_middleware\n===============\n\nCollects every hook.\n", encoding="utf-8")
+        from balecontext import hook
+        project = Project(self.root)
+        project.index()
+        text, response = hook.prompt_pack(project, "load_middleware() collects the hooks in the wrong order. Find the cause in the handler and fix it, then add a test next to the existing handler tests.")
+        self.assertEqual(response["mode"], "pointers")
+        self.assertEqual(response["parts"], [])
+        self.assertLess(len(text), hook.POINTER_CHARS)
+        self.assertIn("=== CODE (path:lines name)\nshop/handlers.py:5-9 BaseHandler.load_middleware  (entry)", text)
+        self.assertIn("shop/handlers.py:2-3 BaseHandler.__init__  (constructor of BaseHandler", text)
+        self.assertIn("=== TESTS naming load_middleware or handlers\ntests/test_handlers.py (1 line: 2)", text)
+        self.assertIn("=== DOCS naming load_middleware or handlers\ndocs/handlers.txt (1 line: 1)", text)
+        self.assertNotIn("for middleware in settings.MIDDLEWARE", text)  # no source bodies
+        # A question stays a question even when it says "add": it gets the evidence pack.
+        text, response = hook.prompt_pack(project, "How do I add a hook that load_middleware() collects?")
+        self.assertNotIn("mode", response)
+        self.assertIn("for middleware in settings.MIDDLEWARE", text)
+        self.assertFalse(hook.edit_prompt("Explain load_middleware(). Then add a note on ordering. Do not modify any files."))
+
     def test_an_outline_covers_the_whole_definition_behind_a_cut_block(self):
         body = "".join(f"    if kind == {i}:\n        return handle_{i}(request)\n" for i in range(60))
         (self.root / "dispatch.py").write_text("def dispatch(request, kind):\n" + body + "    return None\n", encoding="utf-8")
@@ -1104,7 +1205,7 @@ class HookTest(unittest.TestCase):
 
     def test_installer_adds_the_hook_once_and_keeps_other_settings(self):
         import json
-        from balecontext.integrations import install
+        from balecontext.integrations import HOOK_TIMEOUT, install
         settings = self.root / ".claude/settings.json"
         settings.parent.mkdir()
         settings.write_text(json.dumps({"permissions": {"allow": ["Read"]}}), encoding="utf-8")
@@ -1123,12 +1224,15 @@ class HookTest(unittest.TestCase):
         self.assertEqual(len(data["hooks"]["PreCompact"][0]["hooks"]), 1)
         # An earlier install with part 1 alone gets the other parts added once.
         data["hooks"]["UserPromptSubmit"][0]["hooks"] = data["hooks"]["UserPromptSubmit"][0]["hooks"][:1]
+        data["hooks"]["UserPromptSubmit"][0]["hooks"][0]["timeout"] = 30
         settings.write_text(json.dumps(data), encoding="utf-8")
         self.assertIn(".claude/settings.json", install(project, "claude", hook=True)["changed"])
         self.assertNotIn(".claude/settings.json", install(project, "claude", hook=True)["changed"])
         data = json.loads(settings.read_text(encoding="utf-8"))
         parts = [h["args"][4:] for group in data["hooks"]["UserPromptSubmit"] for h in group["hooks"]]
         self.assertEqual(sorted(parts), sorted([[]] + [["--part", str(n)] for n in range(2, 6)]))
+        # An earlier install's shorter time limit is raised too.
+        self.assertEqual({h["timeout"] for group in data["hooks"]["UserPromptSubmit"] for h in group["hooks"]}, {HOOK_TIMEOUT})
         with self.assertRaises(ValueError):
             install(project, "codex", hook=True)
         self.assertFalse((self.root / ".codex").exists())
@@ -1136,3 +1240,67 @@ class HookTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TaskPromptTest(unittest.TestCase):
+    """Prompts for bigger tasks: a planted bug to find, a feature to add across files."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix="balecontext-task-")
+        self.root = Path(self.temporary.name).resolve()
+        middleware = "class {name}Middleware:\n    def process_request(self, request):\n        return None\n\n    def process_view(self, request, view_func, view_args, view_kwargs):\n        return None\n"
+        for name, text in {
+            "shop/handlers/base.py": (
+                "class BaseHandler:\n    def load_middleware(self):\n        self._view_middleware = []\n        for middleware in settings.MIDDLEWARE:\n"
+                "            mw_instance = middleware()\n            if hasattr(mw_instance, \"process_view\"):\n"
+                "                self._view_middleware.insert(0, mw_instance.process_view)\n\n"
+                "    def _get_response(self, request):\n        for middleware_method in self._view_middleware:\n            response = middleware_method(request, None, (), {})\n        return response\n"),
+            "shop/middleware/audit.py": middleware.format(name="Audit"),
+            "shop/middleware/rate.py": middleware.format(name="RateLimit"),
+            "shop/middleware/csrf.py": middleware.format(name="Csrf"),
+            "shop/middleware/auth.py": middleware.format(name="Login"),
+            "shop/management/commands/listurls.py": (
+                "class Command:\n    def add_arguments(self, parser):\n        parser.add_argument(\"--prefix\", default=\"\")\n\n"
+                "    def handle(self, *args, **options):\n        for pattern in get_patterns():\n            if pattern.route.startswith(options[\"prefix\"]):\n                self.stdout.write(pattern.route)\n"),
+            "shop/sessions.py": (
+                "class Session:\n    def __init__(self):\n        self.headers = {}\n        self.timeout = None\n\n"
+                "    def request(self, method, url, timeout=None):\n        return self.send(method, url, timeout or self.timeout)\n\n"
+                "    def send(self, method, url, timeout):\n        return timeout\n\n\n"
+                "def session():\n    return Session()\n"),
+            "package.json": '{"name": "@acme/shop", "version": "1.0.0"}\n',
+        }.items():
+            target = self.root / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(text, encoding="utf-8")
+        self.project = Project(self.root)
+
+    def tearDown(self):
+        self.temporary.cleanup()
+
+    def names(self, response):
+        return [(source["name"], source["path"]) for source in response["sources"]]
+
+    def test_a_hook_many_classes_define_leads_with_the_place_that_runs_it(self):
+        response = context(self.project, "Two middlewares both define process_view() and they run in the wrong order on this checkout. Find the cause in the handler code and fix it.")
+        self.assertEqual(self.names(response)[0], ("BaseHandler.load_middleware", "shop/handlers/base.py"))
+        # Said whose, the question is about that hook, not about how hooks are run.
+        response = context(self.project, "How does AuditMiddleware.process_view() decide what to do?")
+        self.assertEqual(self.names(response)[0], ("AuditMiddleware.process_view", "shop/middleware/audit.py"))
+
+    def test_a_class_beats_a_function_spelled_in_lowercase(self):
+        response = context(self.project, "Add a default timeout attribute to shop.Session that Session.request() uses when none is given; s = Session(); s.timeout = 5")
+        names = self.names(response)
+        self.assertNotIn(("session", "shop/sessions.py"), names)
+        self.assertTrue(all(name.startswith("Session") for name, _ in names), names)
+
+    def test_a_file_name_the_question_uses_finds_that_files_code(self):
+        response = context(self.project, "Add an --exclude option to the listurls management command that hides every route starting with a given prefix")
+        self.assertEqual(self.names(response)[0][1], "shop/management/commands/listurls.py")
+        parsed = rank.parse("How does the shop listurls command print routes?", {"shop"})
+        self.assertNotIn("shop", parsed.words)
+
+    def test_caller_as_a_noun_is_not_a_callers_question(self):
+        from balecontext.retrieve import CALLERS_QUESTION
+        self.assertIsNone(CALLERS_QUESTION.search("a default timeout that request() uses when the caller passes none"))
+        for question in ("Who calls merge_setting?", "List the callers of merge_setting", "Show every call site of merge_setting"):
+            self.assertIsNotNone(CALLERS_QUESTION.search(question), question)

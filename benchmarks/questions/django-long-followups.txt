@@ -1,0 +1,13 @@
+How does Django run a management command such as migrate, from execute_from_command_line to the command's handle() method? Cite the relevant source files and line numbers. Do not modify any files.
+---
+How does Django's template engine render the extends and block tags? Cite the relevant source files and line numbers. Do not modify any files.
+---
+Who calls get_resolver in Django, and what does each caller use it for? Cite the relevant source files and line numbers. Do not modify any files.
+---
+What would break if I changed what BaseHandler.get_response returns? Cite the relevant source files and line numbers. Do not modify any files.
+---
+Where is WSGIRequest used? Cite the relevant source files and line numbers. Do not modify any files.
+---
+Explain what happens when Django's form.is_valid() is called. Trace field validation, error handling, and form-wide cleaning. Cite the relevant source files and line numbers. Do not modify any files.
+---
+How does Field.clean() run the validators, and where do the ValidationErrors it raises end up on the form? Cite the relevant source files and line numbers. Do not modify any files.

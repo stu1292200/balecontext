@@ -1,0 +1,17 @@
+diff --git a/src/requests/sessions.py b/src/requests/sessions.py
+index d11355b..a40ace9 100644
+--- a/src/requests/sessions.py
++++ b/src/requests/sessions.py
+@@ -96,12 +96,6 @@ def merge_setting(
+     merged_setting = dict_class(to_key_val_list(session_setting))  # type: ignore[arg-type]  # isinstance narrows Any to Mapping[Unknown]
+     merged_setting.update(to_key_val_list(request_setting))  # type: ignore[arg-type]
+ 
+-    # Remove keys that are set to None. Extract keys first to avoid altering
+-    # the dictionary during iteration.
+-    none_keys = [k for (k, v) in merged_setting.items() if v is None]
+-    for key in none_keys:
+-        del merged_setting[key]
+-
+     return merged_setting
+ 
+ 

@@ -52,7 +52,12 @@ def _write(path, text: str) -> None:
 
 def hook_settings(part: int = 1) -> dict:
     """Claude Code hook command, run without a shell so paths with spaces work."""
-    return {"type": "command", "command": sys.executable, "args": ["-m", "balecontext", "hook", "claude"] + (["--part", str(part)] if part > 1 else []), "timeout": 30}
+    return {"type": "command", "command": sys.executable, "args": ["-m", "balecontext", "hook", "claude"] + (["--part", str(part)] if part > 1 else []), "timeout": HOOK_TIMEOUT}
+
+
+# Seconds Claude Code gives the hook. A cancelled hook costs far more than a slow one: the model
+# then searches by itself. A large project's first prompt took 25 seconds on a Windows PC.
+HOOK_TIMEOUT = 120
 
 
 # UserPromptSubmit hands the model evidence: part 1 builds it, and the other parts, run alongside,
@@ -88,8 +93,13 @@ def _install_hook(project: Project, dry_run: bool) -> list[str]:
         groups = settings.setdefault("hooks", {}).setdefault(event, [])
         if not isinstance(groups, list):
             raise ValueError(f"{event} hooks must be a list.")
-        present = {_hook_part(h) for g in groups if isinstance(g, dict) and isinstance(g.get("hooks"), list) for h in g["hooks"]}
-        # An earlier install has part 1 alone; the parts it lacks are added beside it.
+        entries = [h for g in groups if isinstance(g, dict) and isinstance(g.get("hooks"), list) for h in g["hooks"]]
+        present = {_hook_part(h) for h in entries}
+        # An earlier install has part 1 alone, or a shorter time limit; the parts it lacks are added beside it.
+        for entry in entries:
+            if _hook_part(entry) is not None and (entry.get("timeout") or 0) < HOOK_TIMEOUT:
+                entry["timeout"] = HOOK_TIMEOUT
+                changed = True
         missing = [hook_settings(part) for part in parts if part not in present]
         if missing:
             groups.append({"hooks": missing})

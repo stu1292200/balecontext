@@ -2,6 +2,25 @@
 
 ## Unreleased — ranking and evidence packs
 
+- Pointer pack for tasks that change code: a prompt written as an instruction to fix, add,
+  implement or rename (not a question, and not one that says "do not modify") gets about
+  1.5 to 2.5k characters of pointers instead of source: the definitions an evidence pack would
+  show as `path:lines name`, the constructor of a class it names, and the test and doc files
+  naming what the prompt names, with line numbers. Claude reads the lines it edits in any case,
+  so source sent up front was written to the cache for nothing (measured: 7 to 41% higher cost
+  than plain Claude Code on four editing tasks). The hook log records `mode: pointers`.
+- Bigger tasks for the paired test: `claude_pair.py --allow-edits` lets Claude edit files
+  and saves each run's changes as a diff (also in `share.md`); `--setup-patch` plants a bug
+  before every run and undoes it. `benchmarks/tasks/` holds two planted bugs and two
+  features for Django and requests, with notes on what a correct result looks like, and
+  `benchmarks/questions/django-long-followups.txt` makes an eight-question conversation.
+- Ranking for task prompts: a hook that many classes define (`process_view`) leads with the
+  place that runs it by name (`BaseHandler.load_middleware`) when the question does not say
+  whose; a word that is a file's whole name and no symbol's (`listurls`) finds that file's
+  code; a name written as the question writes it (`Session`, not `session()`) wins, and two
+  spellings of one symbol pick it once; "the caller" as a noun is no longer a callers
+  question; the project's own names (its folder and the name in package.json or
+  pyproject.toml) are not search words unless a class carries one.
 - Symbol-first ranking: identifiers in the query (`form.is_valid`, `BaseForm full_clean`)
   are matched by name and class qualifier before any body-text match; instruction words
   such as "cite", "files" and "line numbers" are ignored; implementation code ranks
@@ -215,6 +234,34 @@
   pack it got before missed `merge_environment_settings` yet said COMPLETE. None of the 48 existing
   benchmark and conversation questions reads as a callers question. New paired-test conversations
   `requests-callers` and `django-callers` measure this kind of task.
+- What the paired `django-callers` and hard Django runs found missing: a long caller shown around
+  a call now also shows the lines soon after it that use the call's result (`response =
+  self.get_response(request)`, then `response.close()`), which is what a change to the result would
+  break; the sync or async counterpart of the method asked about (`get_response_async` beside
+  `get_response`) is shown with the lines that name it; library code in a `test` package of the
+  project (`django/test/client.py`, the test client) counts as code that calls the definition, not
+  as a test line; and a short constructor that runs a method the pack shows (`WSGIHandler.__init__`
+  calls `load_middleware`) is sent with the entry. Django's `get_response` question grows from
+  3,813 to 5,680 characters, the hard Django conversation by 190 characters; the requests
+  conversations and the offline benchmark are unchanged.
+- The hook's time limit in Claude Code's settings is 120 seconds instead of 30, and the extra parts
+  wait up to 110 seconds for the pack. Baleegh's session reports showed the hook cancelled at 30
+  seconds on the first prompt of a hard Django run (Claude then searched with 8 tool calls, 102,745
+  tokens against 35,354 in the run where the hook finished), and 8 to 25 seconds per prompt on his
+  Windows PC against 2 to 5 here. `balecontext install --hook` raises the limit in an existing
+  settings file. Each line of `.balecontext/hook-log.jsonl` now also records how long the hook took
+  and how much of that was refreshing the index, so a slow machine can be understood from its log.
+- A callers pack shows up to ten documentation lines that name the definition, one each
+  (a release note can say what a change breaks for users); more are counted. Documents are
+  read as prose, so a `*` bullet or `#` heading line is kept, and a docs chapter about testing
+  (`docs/topics/testing/tools.txt`) counts as documentation, not as a test.
+- `benchmarks/wire_log.py` records every request Claude Code sends to the model, with the
+  usage the model reported, by standing in for ANTHROPIC_BASE_URL; `benchmarks/wire_report.py`
+  shows where each request stops matching the one before it, as the prompt cache sees it.
+- The hook ranks a prompt once: body matches, the ranking and each file's lines and docstring
+  ranges are kept for the process, so packing the prompt at several budgets and building the
+  extra parts no longer repeat them. The packs are the same; the hook takes about 40% less time
+  (Django question 1 here: 2.9 s instead of 5.0 s, index refresh included).
 - `benchmarks/claude_pair.py` writes `share.md` itself at the end of a test.
 - `benchmarks/share_results.py` bundles one paired test (summary, per-question figures,
   per-call usage, tool calls and answers) into a single `share.md`.

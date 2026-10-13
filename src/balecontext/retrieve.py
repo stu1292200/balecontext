@@ -8,7 +8,7 @@ import math
 import os
 import re
 from collections import deque
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 
 from . import rank
 from .files import SECRET_CONTENT
@@ -105,27 +105,74 @@ CALLERS_QUESTION = re.compile(
     r"\b(?:who|what)\s+(?:else\s+)?(?:calls|invokes|uses|references|imports|depends on|relies on)\b(?!\s+(?:does|do|did|are|is|was|were|made|happen))"
     r"|\bwhich\s+(?:\w+\s+){0,2}?(?:code|functions?|methods?|classes|modules?|files?|places?|parts?|tests?|views?)(?:\s+\w+){0,3}?\s+"
     r"(?:call|calls|invoke|invokes|use|uses|reference|references|import|imports)\b"
-    r"|\bcall(?:ers?|[- ]sites?)\b|\busages?\b|\b(?:used|called) by\b|\breferences? to\b|\bdependents\b"
+    r"|\bcallers\b|\bcallers?\s+of\b|\bcall[- ]sites?\b|\busages?\b|\b(?:used|called) by\b|\breferences? to\b|\bdependents\b"
     r"|\bwhere\b(?:[^.?!]|\.(?=\w)){0,60}?\b(?:called|used|invoked|referenced|imported)\b"
     r"|\b(?:would|will|could|might)\s+(?:\w+\s+){0,3}?(?:break|fail|be affected)\b"
     r"|\bif\s+(?:i|we|you|someone)\s+(?:change|changed|rename|renamed|remove|removed|delete|deleted|modify|modified)\b"
     r"|\bimpact of\b|\baffected by\b", re.I)
-# A caller up to this many lines is shown whole; a longer one only around each call.
+# A caller up to this many lines is shown whole; a longer one only around each call, plus the
+# lines soon after that use what the call returned.
 CALLER_LINES = 30
 CALL_WINDOW = 3
+RESULT_WINDOW = 12
 # One-line entries per section before the rest are only counted.
 LISTED_LINES = 40
+# Doc lines naming a definition shown one each in a callers pack.
+DOC_LINES = 10
 _TABLES: dict[str, tuple[str, rank.SymbolTable]] = {}
+_RANKED: dict[tuple[str, str, str], tuple[list[dict], list]] = {}
+
+
+def _generation(db) -> str:
+    return str((db.execute("SELECT value FROM metadata WHERE key='generation'").fetchone() or ["0"])[0])
 
 
 def _symbol_table(project: Project, db) -> rank.SymbolTable:
-    generation = (db.execute("SELECT value FROM metadata WHERE key='generation'").fetchone() or ["0"])[0]
+    generation = _generation(db)
     cached = _TABLES.get(str(project.db_path))
     if cached and cached[0] == generation:
         return cached[1]
     table = rank.SymbolTable(db.execute("SELECT id,path,name,kind,start,end FROM nodes"))
+    # The project's names are not search words, unless one is also a class's (the `Hono` class in hono).
+    classes = lambda name: any(table.entries[i].kind == "class" and table.entries[i].category == "code" for i in table.by_leaf.get(name, ()))
+    table.names = {table.package} | {name for name in {project.root.name.lower(), *_declared_names(project.root)} if not classes(name)}
+    table.names.discard("")
     _TABLES[str(project.db_path)] = (generation, table)
     return table
+
+
+def _declared_names(root: Path) -> set[str]:
+    """The names the project gives itself in package.json, pyproject.toml or setup.cfg."""
+    names: set[str] = set()
+    try:
+        package = json.loads((root / "package.json").read_text(encoding="utf-8"))
+        if isinstance(package.get("name"), str):
+            names.add(package["name"].rsplit("/", 1)[-1].lower())
+    except (OSError, ValueError):
+        pass
+    for file in ("pyproject.toml", "setup.cfg"):
+        try:
+            found = re.search(r'^name\s*=\s*"?([\w.-]+)"?', (root / file).read_text(encoding="utf-8"), re.M)
+        except OSError:
+            continue
+        if found:
+            names.add(found.group(1).lower())
+    return names
+
+
+def _ranked(project: Project, db, table: rank.SymbolTable, parsed: rank.Query, query: str) -> tuple[list[dict], list]:
+    """Body matches and ranked definitions for a question, remembered within the process: the hook
+    ranks a prompt once and packs it at several budgets, and the ranking does not depend on the budget."""
+    key = (str(project.db_path), _generation(db), query)
+    found = _RANKED.get(key)
+    if found is None:
+        body = _body_matches(db, query)
+        body_scores = {row["id"]: 40.0 * (1 - index / max(1, len(body))) for index, row in enumerate(body) if row["kind"] not in {"file", "chunk"}}
+        found = _RANKED[key] = (body, rank.score(table, parsed, body_scores))
+        if len(_RANKED) > 8:
+            del _RANKED[next(iter(_RANKED))]
+    body, ranked = found
+    return [dict(row) for row in body], [(value, entry, set(matched)) for value, entry, matched in ranked]
 
 
 def _docstrings(content: str) -> dict[int, tuple[int, int]]:
@@ -144,11 +191,19 @@ def _docstrings(content: str) -> dict[int, tuple[int, int]]:
     return ranges
 
 
+_FILES: dict[tuple[str, str], tuple[dict, dict]] = {}
+
+
 class _Files:
-    def __init__(self, db):
+    """Lines and docstring ranges of the files a pack reads, fetched once. With a `key` (the index
+    and its generation) they are kept for the process, so the hook's several packs of one prompt
+    read and parse each file once."""
+
+    def __init__(self, db, key: tuple[str, str] | None = None):
         self.db = db
-        self.lines: dict[str, list[str]] = {}
-        self.docs: dict[str, dict[int, tuple[int, int]]] = {}
+        self.lines, self.docs = _FILES.setdefault(key, ({}, {})) if key else ({}, {})
+        if len(_FILES) > 2:
+            del _FILES[next(iter(_FILES))]
 
     def get(self, path: str) -> list[str]:
         if path not in self.lines:
@@ -556,6 +611,35 @@ def _computing_constructor(db, files: "_Files", item: dict) -> tuple[dict, str] 
     return init, f"constructor of {item['name'].rsplit('.', 1)[0]}; sets {', '.join(dict.fromkeys(computed))}, read by {item['name']}"
 
 
+def _running_constructor(db, files: "_Files", item: dict, shown: set[str]) -> tuple[dict, str] | None:
+    """A short constructor of the method's class that runs a method the pack shows (`WSGIHandler.__init__`
+    calls `load_middleware`, which builds the chain `__call__` later runs)."""
+    init = next((m for m in _own_methods(db, item) if m["name"].endswith((".__init__", ".constructor"))), None)
+    if not init or init["end"] - init["start"] >= 15:
+        return None
+    body = "\n".join(files.get(item["path"])[init["start"] - 1:init["end"]])
+    called = [name for name in dict.fromkeys(re.findall(r"\b(?:self|this)\.(\w+)\s*\(", body)) if name in shown]
+    if not called:
+        return None
+    return init, f"constructor of {item['name'].rsplit('.', 1)[0]}; calls {', '.join(called)} when the object is made"
+
+
+def _counterpart(db, target: dict) -> dict | None:
+    """The sync or async twin of a method in its class: `get_response_async` beside `get_response`,
+    `readFileSync` beside `readFile`."""
+    if target["kind"] != "method" or "." not in target["name"]:
+        return None
+    owner, leaf = target["name"].rsplit(".", 1)
+    names = [f"{leaf}_async", f"async_{leaf}", f"{leaf}Async", f"{leaf}Sync"]
+    names += [leaf[:-len(affix)] for affix in ("_async", "Async", "Sync") if leaf.endswith(affix) and len(leaf) > len(affix)]
+    names += [leaf[len("async_"):]] if leaf.startswith("async_") else []
+    for name in names:
+        row = db.execute("SELECT id,path,name,kind,start,end FROM nodes WHERE path=? AND name=? AND kind='method'", (target["path"], f"{owner}.{name}")).fetchone()
+        if row:
+            return dict(row)
+    return None
+
+
 def _callable_class(db, table, words: set[str], planned_ids: set[str]) -> tuple[dict, str] | None:
     """The `__call__` of the one project base class a question word begins (`MiddlewareMixin`, base
     of 19 middleware classes, for "the middleware chain"): what each object in such a chain runs
@@ -715,6 +799,50 @@ def _closure(db, node_id: str, path: str, depth: int = 4) -> set[str]:
     return seen
 
 
+def _dispatcher_first(db, files: _Files, table: rank.SymbolTable, parsed: rank.Query, picked: list) -> list:
+    """A hook that many classes define is run by one place that looks it up by name: every
+    middleware defines `process_view`, and `BaseHandler.load_middleware` collects them with
+    `hasattr(mw_instance, "process_view")`. A question naming such a hook without saying whose
+    ("both define process_view()") is about how the hooks are run, so that dispatcher leads and the
+    definitions follow."""
+    if not picked:
+        return picked
+    lead = picked[0][1]
+    definitions = [table.entries[i] for i in table.by_leaf.get(lead.leaf, ()) if table.entries[i].category == "code" and table.entries[i].kind in ("function", "method")]
+    identifier = next((i for i in parsed.identifiers if i.leaf.lower() == lead.leaf), None)
+    if len(definitions) < 4 or identifier is None or identifier.qualifiers:
+        return picked
+    owners = {owner for entry in definitions for owner in entry.owner}
+    if {i.leaf.lower() for i in parsed.identifiers if i.is_class} & owners or set(parsed.words) & {rank.stem(t) for owner in owners for t in rank.split_identifier(owner)}:
+        return picked  # the question says whose hook it means
+    leaf = re.escape(identifier.leaf)
+    by_name = re.compile(rf"[\"']{leaf}[\"']")
+    as_value = re.compile(rf"\.\s*{leaf}\b(?!\s*\()")
+    nodes: dict[str, dict] = {}
+    weight: dict[str, int] = {}
+    for hit in _named_lines(db, files, identifier.leaf, member=False):
+        if rank.path_class(hit["path"]) != "code" or re.match(rf"\s*(?:async\s+)?(?:def|function)\s+{leaf}\b", hit["text"]):
+            continue
+        points = 2 if by_name.search(hit["text"]) else 1 if as_value.search(hit["text"]) else 0
+        if not points:
+            continue
+        around = [dict(r) for r in db.execute("SELECT id,path,name,kind,start,end FROM nodes WHERE path=? AND kind IN ('function','method') AND start<=? AND end>=?", (hit["path"], hit["line"], hit["line"]))]
+        inner = min(around, key=lambda n: n["end"] - n["start"], default=None)
+        if inner is None or inner["name"].rsplit(".", 1)[-1].lower() == lead.leaf:
+            continue
+        nodes[inner["id"]] = inner
+        weight[inner["id"]] = weight.get(inner["id"], 0) + points
+    if not weight:
+        return picked
+    best = max(weight, key=lambda i: (weight[i], nodes[i]["path"], -nodes[i]["start"]))
+    if weight[best] < 2:
+        return picked
+    entry = next((e for e in table.entries if e.id == best), None)
+    if entry is None:
+        return picked
+    return [(picked[0][0], entry, set())] + [item for item in picked if item[1].id != best]
+
+
 def _call_root(db, seeds: list, ranked: list) -> list:
     """Lead with the outermost function: the matching definition whose call chain reaches the most other matches.
 
@@ -799,10 +927,22 @@ def _named_lines(db, files: _Files, name: str, member: bool) -> list[dict]:
     for row in db.execute("SELECT path FROM files WHERE instr(content, ?) > 0 ORDER BY path", (name,)):
         lines = files.get(row["path"])
         docs = [span for span in files.docs.get(row["path"], {}).values()]
+        # In a document, `*` starts a bullet and `#` a heading, not a comment.
+        prose = rank.path_class(row["path"]) in ("doc", "other")
         for number, text in enumerate(lines, 1):
-            if pattern.search(text) and not text.lstrip().startswith(("#", "//", "/*", "*")) and not any(a <= number <= b for a, b in docs):
+            if pattern.search(text) and (prose or not text.lstrip().startswith(("#", "//", "/*", "*"))) and not any(a <= number <= b for a, b in docs):
                 found.append({"path": row["path"], "line": number, "text": text})
     return found
+
+
+def _support_code(path: str) -> bool:
+    """Library code that lives in a `test` package of the project (`django/test/client.py`) rather
+    than in a test tree or a test module."""
+    parts = PurePosixPath(path.lower()).parts
+    trees = {"tests", "test", "testing", "__tests__", "spec", "specs"}
+    return (len(parts) > 2 and parts[0] not in trees and bool({"test", "testing"} & set(parts[1:-1]))
+            and not {"tests", "__tests__", "spec", "specs"} & set(parts[:-1])
+            and not re.match(r"test_|tests?\.|conftest\.|.*(?:_test|_tests|\.test|\.spec)\.\w+$", parts[-1]))
 
 
 def _line_kind(text: str, leaf: str) -> str:
@@ -860,10 +1000,11 @@ def _callers_pack(db, files: _Files, parsed: rank.Query, target: dict, limit: in
     possible: list[str] = []
     others: list[str] = []
     tests: list[tuple[int, str]] = []
-    in_docs = 0
+    docs: list[str] = []
     own_kind = 0
     lineage = _own_classes(db, target)
     related: dict[tuple[str, str], bool] = {}
+    twin = _counterpart(db, target)
 
     def reaches(cls: dict) -> bool:
         """`self.<name>` in this class can be the target: the target's class, a base of it, or a subclass."""
@@ -877,7 +1018,7 @@ def _callers_pack(db, files: _Files, parsed: rank.Query, target: dict, limit: in
             continue
         place = rank.path_class(hit["path"])
         if place in ("doc", "other"):
-            in_docs += 1
+            docs.append(f"{hit['path']}:{hit['line']}: {hit['text'].strip()[:160]}")
             continue
         nest = enclosing(hit["path"], hit["line"])
         owner = next((n for n in nest if n["kind"] in ("function", "method")), nest[0] if nest else None)
@@ -896,10 +1037,12 @@ def _callers_pack(db, files: _Files, parsed: rank.Query, target: dict, limit: in
             continue
         where = f"{hit['path']}:{hit['line']}" + (f" {owner['name']}" if owner else "")
         entry = f"{where}: {hit['text'].strip()[:160]}"
-        if kinds & {"calls", "uses"} and place == "code" and owner:
+        # Library code in a `test` package (`django/test/client.py`, the test client) breaks like any other code.
+        code_like = place == "code" or (place == "test" and _support_code(hit["path"]))
+        if kinds & {"calls", "uses"} and code_like and owner:
             callers.setdefault(owner["id"], {"item": owner, "lines": []})["lines"].append(hit["line"])
-        elif place != "code":
-            # Calls the index resolved come first, then possible ones (`django/test/client.py` is code under a test folder).
+        elif not code_like:
+            # Calls the index resolved come first, then possible ones.
             tests.append((0 if kinds & {"calls", "uses"} else 1 if "CANDIDATE" in kinds else 2, entry))
         elif "inherits" in kinds:
             others.append(f"{entry}  [subclass]")
@@ -920,8 +1063,18 @@ def _callers_pack(db, files: _Files, parsed: rank.Query, target: dict, limit: in
         if complete and len(numbered) <= CALLER_LINES:
             return numbered, note
         source = files.get(item["path"])
-        keep = {item["start"]} | {n for line in lines for n in range(line - CALL_WINDOW, line + CALL_WINDOW + 1) if item["start"] <= n <= min(item["end"], len(source))}
-        return [(n, source[n - 1]) for n in sorted(keep) if source[n - 1].strip()], f"[Excerpt ends around each call: lines of {item['name']} away from its calls to {leaf} are not shown.]"
+        last = min(item["end"], len(source))
+        keep = {item["start"]}
+        for line in lines:
+            keep |= {n for n in range(line - CALL_WINDOW, line + CALL_WINDOW + 1) if item["start"] <= n <= last}
+            # What the caller goes on to do with the result (`response = self.get_response(request)`,
+            # then `response.close()`) is what a change to the result would break.
+            result = re.match(r"\s*(?:(?:const|let|var)\s+)?([A-Za-z_$][\w$]*)\s*(?::[^=\n]*)?=(?!=)", source[line - 1])
+            if result:
+                uses = re.compile(rf"(?<![\w$]){re.escape(result.group(1))}(?![\w$])")
+                keep |= {n for n in range(line + CALL_WINDOW + 1, line + RESULT_WINDOW + 1) if n <= last and uses.search(source[n - 1])}
+        return [(n, source[n - 1]) for n in sorted(keep) if source[n - 1].strip()], \
+            f"[Excerpt: lines of {item['name']} away from its calls to {leaf}, and from what it does with their result, are not shown.]"
 
     header = f"BALECONTEXT EVIDENCE PACK. Query read as {parsed.describe()}. Showing every place that names {target['name']}."
     blocks: list[tuple[dict | None, str, bool]] = []
@@ -937,16 +1090,35 @@ def _callers_pack(db, files: _Files, parsed: rank.Query, target: dict, limit: in
         at = f"line {lines[0]}" if len(lines) == 1 else "lines " + ", ".join(map(str, lines))
         through = f" through {via[item['id']]}" if item["id"] in via else ""
         blocks.append((item, _source_block(item, numbered, f"calls {leaf} at {at}{through}{called_by(item)}", True, note), not note.startswith("[Excerpt")))
+    # The sync or async counterpart of the method (`get_response_async` beside `get_response`) is
+    # the same contract for the other kind of caller, so it is shown and its callers are listed.
+    twin_lines: list[str] = []
+    twin_leaf = twin["name"].rsplit(".", 1)[-1] if twin else ""
+    if twin:
+        numbered, complete, note = _render_body(files, twin, LONG_BODY)
+        blocks.append((twin, _source_block(twin, numbered, f"counterpart of {leaf} in {twin['name'].rsplit('.', 1)[0]} (the same method for the other of sync and async)", complete, note), complete))
+        for hit in _named_lines(db, files, twin_leaf, True):
+            if hit["path"] == twin["path"] and twin["start"] <= hit["line"] <= twin["end"] or rank.path_class(hit["path"]) in ("doc", "other"):
+                continue
+            nest = enclosing(hit["path"], hit["line"])
+            owner = next((n for n in nest if n["kind"] in ("function", "method")), nest[0] if nest else None)
+            twin_lines.append(f"{hit['path']}:{hit['line']}" + (f" {owner['name']}" if owner else "") + f": {hit['text'].strip()[:160]}")
     # A larger pack (the hook's extra parts) lists more of each section.
     room = max(LISTED_LINES, LISTED_LINES * limit // FIRST_RESPONSE_CAP)
     capped = 0
     for title, entries in ((f"POSSIBLE CALLS of {leaf} (receiver type not known; one line each)", possible),
                            (f"OTHER LINES NAMING {leaf} in the code (one line each)", others),
-                           (f"TESTS naming {leaf} (one line each)", [entry for _, entry in sorted(tests, key=lambda t: t[0])])):
+                           (f"LINES NAMING {twin_leaf}, the counterpart of {leaf} (one line each)", twin_lines),
+                           (f"TESTS naming {leaf} (one line each)", [entry for _, entry in sorted(tests, key=lambda t: t[0])]),
+                           (f"DOCS naming {leaf} (one line each)", docs)):
         if entries:
-            capped += max(0, len(entries) - room)
-            more = [f"[and {len(entries) - room} more lines]"] if len(entries) > room else []
-            blocks.append((None, f"=== {title}\n" + "\n".join(entries[:room] + more), True))
+            # A release note or a guide can say what a change to the definition breaks for users
+            # ("manually built WSGIRequest objects must be given a file-like wsgi.input"), so a
+            # few doc lines are shown; many are only counted and do not make the pack partial.
+            shown = min(room, DOC_LINES) if entries is docs else room
+            capped += max(0, len(entries) - shown) if entries is not docs else 0
+            more = [f"[and {len(entries) - shown} more lines]"] if len(entries) > shown else []
+            blocks.append((None, f"=== {title}\n" + "\n".join(entries[:shown] + more), True))
     map_lines = [_map_line(item, "named") for item, _, _ in blocks if item]
     reserve = min(120 + estimate("\n".join(map_lines[:20])), limit // 4)
     sections: list[str] = [header, NOTICE]
@@ -983,8 +1155,9 @@ def _callers_pack(db, files: _Files, parsed: rank.Query, target: dict, limit: in
     found += [f"{len(possible)} more may call it (receiver type not known)"] if possible else []
     found += [f"{count(len(others), 'other line')} in the code name{'s' if len(others) == 1 else ''} it"] if others else []
     found += [f"{count(len(tests), 'line')} in tests"] if tests else []
+    found += [f"{count(len(twin_lines), 'line')} name{'s' if len(twin_lines) == 1 else ''} its counterpart {twin_leaf}"] if twin_lines else []
     found += [f"{count(own_kind, 'line')} name{'s' if own_kind == 1 else ''} another class's or test's own {leaf} (not listed)"] if own_kind else []
-    found += [f"{count(in_docs, 'line')} in docs (not listed)"] if in_docs else []
+    found += [f"{count(len(docs), 'line')} in docs" + (f" ({DOC_LINES} listed)" if len(docs) > DOC_LINES else "")] if docs else []
     caveat = f"A call made through another name (an alias, a value passed as a callback, getattr) shows only where {leaf} itself is written."
     if left or capped or cut_short:
         verdict = "PARTIAL"
@@ -1019,12 +1192,11 @@ def context(project: Project, query: str, budget: int = 3000, session: dict | No
     limit = min(budget, cap)
     with project.connect(snapshot=True) as db:
         table = _symbol_table(project, db)
-        parsed = rank.parse(query, table.package)
-        body = _body_matches(db, query)
-        body_scores = {row["id"]: 40.0 * (1 - index / max(1, len(body))) for index, row in enumerate(body) if row["kind"] not in {"file", "chunk"}}
-        ranked = rank.score(table, parsed, body_scores)
+        parsed = rank.parse(query, getattr(table, "names", table.package))
+        body, ranked = _ranked(project, db, table, parsed, query)
         picked = rank.pick_seeds(parsed, ranked)
-        files = _Files(db)
+        files = _Files(db, (str(project.db_path), _generation(db)))
+        picked = _dispatcher_first(db, files, table, parsed, picked)
         # The definition a callers question names leads as it is, not the outermost of its callers.
         named = next((seed for seed in picked if seed[2]), picked[0] if picked else None)
         if named and named[1].kind in ("function", "method", "class") and CALLERS_QUESTION.search(query):
@@ -1269,7 +1441,8 @@ def context(project: Project, query: str, budget: int = 3000, session: dict | No
             if item["kind"] not in ("method", "function"):
                 continue
             if item["kind"] == "method" and item["id"] in seed_ids:
-                constructor = _computing_constructor(db, files, item)
+                constructor = _computing_constructor(db, files, item) or _running_constructor(
+                    db, files, item, {i["name"].rsplit(".", 1)[-1] for i, _ in planned if i["kind"] == "method" and i["id"] != item["id"]})
                 callables = callables or {entry.name.rsplit(".", 1)[-1] for entry in table.entries if entry.kind in ("method", "function")}
                 dependants += ([constructor] if constructor else []) + _state_readers(db, files, item) + _handoff_readers(db, files, item, callables)
             if templates_asked:
@@ -1474,7 +1647,7 @@ def expand(project: Project, ids: list[str], budget: int = 4000, session: dict |
         raise ValueError("Provide 1 to 20 node ids from a previous BaleContext response.")
     project.index()
     with project.connect(snapshot=True) as db:
-        files = _Files(db)
+        files = _Files(db, (str(project.db_path), _generation(db)))
         sections = [NOTICE]
         used, missing, truncated = [], [], []
         sent = _session_sent(db, session)
