@@ -16,7 +16,9 @@ account, subscription, embedding download, or telemetry is required.
 
 Created by **Muhammad Baleegh**. This is an original implementation.
 
-[![Whole-task tokens and cost, plain Claude Code against Claude Code with BaleContext](docs/results-chart.svg)](docs/benchmarks.md)
+[![Claude with BaleContext uses less and costs less: 74% less usage in long chats, 68% on questions about code, 14% on bug fixes and features](docs/results-chart.svg)](docs/benchmarks.md)
+
+[See all 18 tests and how we got here](docs/benchmarks.md#how-we-got-here)
 
 **Status: v0.1.0 alpha.** Core CLI and MCP protocol tests are automated. Live
 integration tests in individual agent applications are still pending. Early

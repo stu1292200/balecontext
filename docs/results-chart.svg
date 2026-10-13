@@ -1,54 +1,24 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="860" height="418" viewBox="0 0 860 418" role="img" aria-labelledby="t d" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif">
-<title id="t">BaleContext against plain Claude Code: whole-task tokens and cost</title>
-<desc id="d">Grouped bars per kind of task, plain Claude Code against Claude Code with BaleContext.</desc>
-<style>
-.bg{fill:#fcfcfb}.t1{fill:#0b0b0b}.t2{fill:#52514e}.plain{fill:#8a8984}.bale{fill:#2a78d6}.rule{stroke:#e4e3df}
-.big{fill:#2a78d6}
-@media (prefers-color-scheme: dark){.bg{fill:#1a1a19}.t1{fill:#f0efec}.t2{fill:#c3c2b7}.plain{fill:#77766f}.bale{fill:#3987e5}.big{fill:#5598e7}.rule{stroke:#383835}}
-</style>
-<rect class="bg" width="860" height="418" rx="12"/>
-<text class="big" x="24" y="52" font-size="34" font-weight="700">74% fewer tokens · 35% lower cost</text>
-<text class="t2" x="24" y="78" font-size="15">Long conversation (8 questions about Django), whole task, same model and prompts</text>
-<rect class="plain" x="230" y="98" width="12" height="12" rx="2"/>
-<text class="t1" x="248" y="109" font-size="13">Plain Claude Code</text>
-<rect class="bale" x="380" y="98" width="12" height="12" rx="2"/>
-<text class="t1" x="398" y="109" font-size="13">With BaleContext</text>
-<text class="t2" x="230" y="128" font-size="12" font-weight="600">TOTAL TOKENS</text>
-<text class="t2" x="550" y="128" font-size="12" font-weight="600">COST (CLAUDE CODE ESTIMATE)</text>
-<line class="rule" x1="24" x2="836" y1="134" y2="134"/>
-<text class="t1" x="24" y="158" font-size="15" font-weight="600">Long conversation</text>
-<text class="t2" x="24" y="176" font-size="12">8 questions about Django</text>
-<rect class="plain" x="230" y="146" width="180.0" height="18" rx="4"/>
-<text class="t1" x="416.0" y="159" font-size="12">2.08M</text>
-<rect class="bale" x="230" y="168" width="46.5" height="18" rx="4"/>
-<text class="t1" x="282.5" y="181" font-size="12">537k  (74% less)</text>
-<rect class="plain" x="550" y="146" width="180.0" height="18" rx="4"/>
-<text class="t1" x="736.0" y="159" font-size="12">$0.82</text>
-<rect class="bale" x="550" y="168" width="116.6" height="18" rx="4"/>
-<text class="t1" x="672.6" y="181" font-size="12">$0.53  (35% less)</text>
-<line class="rule" x1="24" x2="836" y1="206" y2="206"/>
-<text class="t1" x="24" y="230" font-size="15" font-weight="600">Questions about code</text>
-<text class="t2" x="24" y="248" font-size="12">6 Django questions</text>
-<rect class="plain" x="230" y="218" width="180.0" height="18" rx="4"/>
-<text class="t1" x="416.0" y="231" font-size="12">740k</text>
-<rect class="bale" x="230" y="240" width="57.8" height="18" rx="4"/>
-<text class="t1" x="293.8" y="253" font-size="12">238k  (68% less)</text>
-<rect class="plain" x="550" y="218" width="180.0" height="18" rx="4"/>
-<text class="t1" x="736.0" y="231" font-size="12">$0.51</text>
-<rect class="bale" x="550" y="240" width="170.5" height="18" rx="4"/>
-<text class="t1" x="726.5" y="253" font-size="12">$0.49  (5% less)</text>
-<line class="rule" x1="24" x2="836" y1="278" y2="278"/>
-<text class="t1" x="24" y="302" font-size="15" font-weight="600">Editing tasks</text>
-<text class="t2" x="24" y="320" font-size="12">fix a bug, add a feature</text>
-<rect class="plain" x="230" y="290" width="180.0" height="18" rx="4"/>
-<text class="t1" x="416.0" y="303" font-size="12">332k</text>
-<rect class="bale" x="230" y="312" width="155.3" height="18" rx="4"/>
-<text class="t1" x="391.3" y="325" font-size="12">287k  (14% less)</text>
-<rect class="plain" x="550" y="290" width="180.0" height="18" rx="4"/>
-<text class="t1" x="736.0" y="303" font-size="12">$0.27</text>
-<rect class="bale" x="550" y="312" width="169.8" height="18" rx="4"/>
-<text class="t1" x="725.8" y="325" font-size="12">$0.26  (6% less)</text>
-<text class="t2" x="24" y="366" font-size="12">Claude Code with sonnet, totals of every model call. Answers and code changes were checked against the source;</text>
-<text class="t2" x="24" y="383" font-size="12">one answer was thinner than plain Claude's. All runs, including weaker and negative ones: docs/benchmarks.md</text>
-<text class="t2" x="24" y="400" font-size="11">Drawn by benchmarks/make_chart.py from benchmarks/results/.</text>
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="450" viewBox="0 0 960 450" role="img" aria-labelledby="t d" font-family="Inter, -apple-system, Segoe UI, Helvetica, Arial, sans-serif">
+<title id="t">What BaleContext saves</title>
+<desc id="d">Three numbers: how much less Claude uses with BaleContext in long chats, quick questions and bug fixes, and how much cheaper each is.</desc>
+<style>.bg{fill:#ffffff}.ink{fill:#111111}.sub{fill:#5c5b57}.mute{fill:#8a8984}.acc{fill:#2a78d6}.card{fill:#f6f6f3}.good{fill:#0ca30c}.bad{fill:#d03b3b}.goodt{fill:#0a7d0a}.badt{fill:#b22e2e}.mark{fill:none;stroke:#ffffff;stroke-width:3;stroke-linecap:round;stroke-linejoin:round}@media (prefers-color-scheme: dark){.bg{fill:#161b22}.ink{fill:#f0efec}.sub{fill:#b8b7b0}.mute{fill:#8f8e88}.acc{fill:#5598e7}.card{fill:#1f252e}.goodt{fill:#4cc24c}.badt{fill:#e66767}}</style>
+<rect class="bg" width="960" height="450" rx="16"/>
+<text class="ink" x="44.0" y="62.0" font-size="28" font-weight="700" text-anchor="start">Claude with BaleContext uses less and costs less</text>
+<text class="sub" x="44.0" y="96.0" font-size="15" font-weight="400" text-anchor="start">We gave Claude the same tasks twice: once alone and once with BaleContext. Answers were just as good.</text>
+<rect class="card" x="44.0" y="150" width="277.3333333333333" height="220" rx="14"/>
+<text class="ink" x="182.7" y="192.0" font-size="17" font-weight="600" text-anchor="middle">Long chats</text>
+<text class="acc" x="182.7" y="266.0" font-size="64" font-weight="700" text-anchor="middle">74%</text>
+<text class="ink" x="182.7" y="296.0" font-size="17" font-weight="600" text-anchor="middle">less usage</text>
+<text class="sub" x="182.7" y="340.0" font-size="16" font-weight="400" text-anchor="middle">and 35% cheaper</text>
+<rect class="card" x="341.3333333333333" y="150" width="277.3333333333333" height="220" rx="14"/>
+<text class="ink" x="480.0" y="192.0" font-size="17" font-weight="600" text-anchor="middle">Questions about code</text>
+<text class="acc" x="480.0" y="266.0" font-size="64" font-weight="700" text-anchor="middle">68%</text>
+<text class="ink" x="480.0" y="296.0" font-size="17" font-weight="600" text-anchor="middle">less usage</text>
+<text class="sub" x="480.0" y="340.0" font-size="16" font-weight="400" text-anchor="middle">and 5% cheaper</text>
+<rect class="card" x="638.6666666666666" y="150" width="277.3333333333333" height="220" rx="14"/>
+<text class="ink" x="777.3" y="192.0" font-size="17" font-weight="600" text-anchor="middle">Bug fixes and features</text>
+<text class="acc" x="777.3" y="266.0" font-size="64" font-weight="700" text-anchor="middle">14%</text>
+<text class="ink" x="777.3" y="296.0" font-size="17" font-weight="600" text-anchor="middle">less usage</text>
+<text class="sub" x="777.3" y="340.0" font-size="16" font-weight="400" text-anchor="middle">and 6% cheaper</text>
+<text class="mute" x="44.0" y="416.0" font-size="14" font-weight="400" text-anchor="start">Less usage means you reach your Claude limit later.</text>
 </svg>

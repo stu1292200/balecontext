@@ -1,4 +1,7 @@
-"""Draw docs/results-chart.svg from the paired test results in benchmarks/results/.
+"""Draw the results charts from the paired test results in benchmarks/results/.
+
+docs/results-chart.svg is the summary on the README; docs/history-chart.svg shows
+every test in the order it was run, with its cost saved or lost.
 
     python benchmarks/make_chart.py
 
@@ -15,12 +18,13 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 RESULTS = ROOT / "benchmarks" / "results"
 OUT = ROOT / "docs" / "results-chart.svg"
+HISTORY_OUT = ROOT / "docs" / "history-chart.svg"
 
 # Latest version of each kind of task. Older and negative runs are on docs/benchmarks.md.
 GROUPS = [
-    ("Long conversation", "8 questions about Django", ["20261013T115226Z"]),
-    ("Questions about code", "6 Django questions", ["20261012T222717Z", "20261012T225947Z"]),
-    ("Editing tasks", "fix a bug, add a feature", ["20261013T122703Z", "20261013T123701Z"]),
+    ("Long chats", "8 questions in a row", ["20261013T115226Z"]),
+    ("Questions about code", "6 questions", ["20261012T222717Z", "20261012T225947Z"]),
+    ("Bug fixes and features", "2 tasks", ["20261013T122703Z", "20261013T123701Z"]),
 ]
 
 
@@ -42,75 +46,132 @@ def totals(stamps: list[str]) -> dict:
     return out
 
 
-def tokens_label(n: float) -> str:
-    return f"{n / 1e6:.2f}M" if n >= 1e6 else f"{n / 1e3:.0f}k"
+# Every published test in the order it was run: (result file, kind in plain words, note shown above it).
+HISTORY = [
+    ("20261012T115817Z", "Question", ""),
+    ("20261012T143438Z", "Question", ""),
+    ("20261012T153206Z", "Question", "From here on, all questions are asked in one chat"),
+    ("20261012T154024Z", "Question", ""),
+    ("20261012T190840Z", "Question", ""),
+    ("20261012T191349Z", "Question", ""),
+    ("20261012T205020Z", "Question", ""),
+    ("20261012T211518Z", "Question", ""),
+    ("20261012T222717Z", "Question", ""),
+    ("20261012T225947Z", "Question", ""),
+    ("20261012T232728Z", "Question", ""),
+    ("20261013T114230Z", "Bug fix", "We start testing bug fixes and new features. These cost more at first"),
+    ("20261013T114524Z", "Bug fix", ""),
+    ("20261013T114752Z", "Feature", ""),
+    ("20261013T115024Z", "Feature", ""),
+    ("20261013T115226Z", "Long chat", ""),
+    ("20261013T122703Z", "Feature", "We fixed it: shorter summaries for bug fixes and features"),
+    ("20261013T123701Z", "Bug fix", ""),
+]
+
+STYLE = (
+    "<style>"
+    ".bg{fill:#ffffff}.ink{fill:#111111}.sub{fill:#5c5b57}.mute{fill:#8a8984}.acc{fill:#2a78d6}.card{fill:#f6f6f3}"
+    ".good{fill:#0ca30c}.bad{fill:#d03b3b}.goodt{fill:#0a7d0a}.badt{fill:#b22e2e}"
+    ".mark{fill:none;stroke:#ffffff;stroke-width:3;stroke-linecap:round;stroke-linejoin:round}"
+    "@media (prefers-color-scheme: dark){.bg{fill:#161b22}.ink{fill:#f0efec}.sub{fill:#b8b7b0}.mute{fill:#8f8e88}"
+    ".acc{fill:#5598e7}.card{fill:#1f252e}.goodt{fill:#4cc24c}.badt{fill:#e66767}}"
+    "</style>"
+)
+FONT = "Inter, -apple-system, Segoe UI, Helvetica, Arial, sans-serif"
 
 
 def esc(s: str) -> str:
     return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
-def draw() -> str:
-    width, left, col_w, gap = 860, 230, 290, 30
-    bar_h, bar_gap, row_h = 18, 4, 72
-    top = 132
-    height = top + row_h * len(GROUPS) + 70
-    cols = [("Total tokens", 0, tokens_label), ("Cost (Claude Code estimate)", 1, lambda v: f"${v:.2f}")]
-    parts = [
+def text(x, y, s, cls, size, weight=400, anchor="start"):
+    return (f'<text class="{cls}" x="{x:.1f}" y="{y:.1f}" font-size="{size}" font-weight="{weight}" '
+            f'text-anchor="{anchor}">{esc(s)}</text>')
+
+
+def svg_open(width, height, title, desc):
+    return [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}" '
-        'role="img" aria-labelledby="t d" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif">',
-        "<title id=\"t\">BaleContext against plain Claude Code: whole-task tokens and cost</title>",
-        "<desc id=\"d\">Grouped bars per kind of task, plain Claude Code against Claude Code with BaleContext.</desc>",
-        "<style>",
-        ".bg{fill:#fcfcfb}.t1{fill:#0b0b0b}.t2{fill:#52514e}.plain{fill:#8a8984}.bale{fill:#2a78d6}.rule{stroke:#e4e3df}",
-        ".big{fill:#2a78d6}",
-        "@media (prefers-color-scheme: dark){.bg{fill:#1a1a19}.t1{fill:#f0efec}.t2{fill:#c3c2b7}"
-        ".plain{fill:#77766f}.bale{fill:#3987e5}.big{fill:#5598e7}.rule{stroke:#383835}}",
-        "</style>",
-        f'<rect class="bg" width="{width}" height="{height}" rx="12"/>',
+        f'role="img" aria-labelledby="t d" font-family="{FONT}">',
+        f'<title id="t">{esc(title)}</title>', f'<desc id="d">{esc(desc)}</desc>', STYLE,
+        f'<rect class="bg" width="{width}" height="{height}" rx="16"/>',
     ]
-    best = totals(GROUPS[0][2])
-    tok_cut = 1 - best["hook"][0] / best["without"][0]
-    cost_cut = 1 - best["hook"][1] / best["without"][1]
-    parts += [
-        f'<text class="big" x="24" y="52" font-size="34" font-weight="700">{tok_cut:.0%} fewer tokens · {cost_cut:.0%} lower cost</text>',
-        f'<text class="t2" x="24" y="78" font-size="15">{esc(GROUPS[0][0])} ({esc(GROUPS[0][1])}), whole task, same model and prompts</text>',
-        f'<rect class="plain" x="{left}" y="98" width="12" height="12" rx="2"/>',
-        f'<text class="t1" x="{left + 18}" y="109" font-size="13">Plain Claude Code</text>',
-        f'<rect class="bale" x="{left + 150}" y="98" width="12" height="12" rx="2"/>',
-        f'<text class="t1" x="{left + 168}" y="109" font-size="13">With BaleContext</text>',
+
+
+def card(x, y, w, h):
+    return f'<rect class="card" x="{x}" y="{y}" width="{w}" height="{h}" rx="14"/>'
+
+
+def draw() -> str:
+    width, pad, gap = 960, 44, 20
+    card_w = (width - 2 * pad - 2 * gap) / 3
+    card_y, card_h = 150, 220
+    height = card_y + card_h + 80
+    out = svg_open(width, height, "What BaleContext saves",
+                   "Three numbers: how much less Claude uses with BaleContext in long chats, quick questions "
+                   "and bug fixes, and how much cheaper each is.")
+    out += [
+        text(pad, 62, "Claude with BaleContext uses less and costs less", "ink", 28, 700),
+        text(pad, 96, "We gave Claude the same tasks twice: once alone and once with BaleContext. "
+             "Answers were just as good.", "sub", 15),
     ]
-    for c, (name, _, _) in enumerate(cols):
-        x = left + c * (col_w + gap)
-        parts.append(f'<text class="t2" x="{x}" y="{top - 4}" font-size="12" font-weight="600">{esc(name.upper())}</text>')
-    for r, (name, sub, stamps) in enumerate(GROUPS):
-        y = top + 10 + r * row_h
+    for k, (name, sub, stamps) in enumerate(GROUPS):
         data = totals(stamps)
-        parts.append(f'<line class="rule" x1="24" x2="{width - 24}" y1="{y - 8}" y2="{y - 8}"/>')
-        parts.append(f'<text class="t1" x="24" y="{y + 16}" font-size="15" font-weight="600">{esc(name)}</text>')
-        parts.append(f'<text class="t2" x="24" y="{y + 34}" font-size="12">{esc(sub)}</text>')
-        for c, (_, i, fmt) in enumerate(cols):
-            x = left + c * (col_w + gap)
-            plain, bale = data["without"][i], data["hook"][i]
-            span = col_w - 110
-            for k, (cls, val) in enumerate((("plain", plain), ("bale", bale))):
-                by = y + 4 + k * (bar_h + bar_gap)
-                w = max(2.0, span * val / plain)
-                parts.append(f'<rect class="{cls}" x="{x}" y="{by}" width="{w:.1f}" height="{bar_h}" rx="4"/>')
-                label = fmt(val)
-                if cls == "bale":
-                    label += f"  ({1 - val / plain:.0%} less)" if val <= plain else f"  ({val / plain - 1:.0%} more)"
-                parts.append(f'<text class="t1" x="{x + w + 6:.1f}" y="{by + 13}" font-size="12">{esc(label)}</text>')
-    foot = top + row_h * len(GROUPS) + 18
-    parts += [
-        f'<text class="t2" x="24" y="{foot}" font-size="12">Claude Code with sonnet, totals of every model call. Answers and code changes were checked against the source;</text>',
-        f'<text class="t2" x="24" y="{foot + 17}" font-size="12">one answer was thinner than plain Claude\'s. All runs, including weaker and negative ones: docs/benchmarks.md</text>',
-        f'<text class="t2" x="24" y="{foot + 34}" font-size="11">Drawn by benchmarks/make_chart.py from benchmarks/results/.</text>',
+        use = 1 - data["hook"][0] / data["without"][0]
+        cost = 1 - data["hook"][1] / data["without"][1]
+        x = pad + k * (card_w + gap)
+        cx = x + card_w / 2
+        out += [
+            card(x, card_y, card_w, card_h),
+            text(cx, card_y + 42, name, "ink", 17, 600, "middle"),
+            text(cx, card_y + 116, f"{use:.0%}", "acc", 64, 700, "middle"),
+            text(cx, card_y + 146, "less usage", "ink", 17, 600, "middle"),
+            text(cx, card_y + 190, f"and {cost:.0%} cheaper", "sub", 16, 400, "middle"),
+        ]
+    out += [
+        text(pad, height - 34, "Less usage means you reach your Claude limit later.", "mute", 14),
         "</svg>",
     ]
-    return "\n".join(parts) + "\n"
+    return "\n".join(out) + "\n"
+
+
+def draw_history() -> str:
+    width, pad = 960, 44
+    per_row, cell_h, gap = 6, 118, 14
+    cell_w = (width - 2 * pad - (per_row - 1) * gap) / per_row
+    savings = [summary(stamp)["hook"]["cost_saving_percent"] for stamp, _, _ in HISTORY]
+    saved = sum(1 for s in savings if s >= 0)
+    top = 150
+    rows = -(-len(HISTORY) // per_row)
+    height = top + rows * (cell_h + gap) + 30
+    out = svg_open(width, height, "Every test we ran",
+                   f"{len(HISTORY)} tests in the order they were run. {saved} were cheaper with BaleContext, "
+                   f"{len(HISTORY) - saved} cost more.")
+    out += [
+        text(pad, 62, f"We ran {len(HISTORY)} tests. {saved} were cheaper, {len(HISTORY) - saved} cost more.",
+             "ink", 28, 700),
+        text(pad, 96, "Bug fixes and new features cost more at first. We fixed that, and the tests after it "
+             "were cheaper again.", "sub", 15),
+    ]
+    for n, ((stamp, kind, _), s) in enumerate(zip(HISTORY, savings)):
+        x = pad + (n % per_row) * (cell_w + gap)
+        y = top + (n // per_row) * (cell_h + gap)
+        cx = x + cell_w / 2
+        good = s >= 0
+        out.append(card(x, y, cell_w, cell_h))
+        out.append(text(cx, y + 26, f"Test {n + 1}", "ink", 14, 600, "middle"))
+        out.append(f'<circle class="{"good" if good else "bad"}" cx="{cx:.1f}" cy="{y + 54}" r="15"/>')
+        mark = (f'<path class="mark" d="M{cx - 7:.1f} {y + 54} l5 5 l9 -10"/>' if good else
+                f'<path class="mark" d="M{cx - 6:.1f} {y + 48} l12 12 M{cx + 6:.1f} {y + 48} l-12 12"/>')
+        out.append(mark)
+        word = f"{abs(s):.0f}% cheaper" if good else f"{abs(s):.0f}% more"
+        out.append(text(cx, y + 90, word, "goodt" if good else "badt", 14, 700, "middle"))
+        out.append(text(cx, y + 108, kind, "mute", 12, 400, "middle"))
+    out.append("</svg>")
+    return "\n".join(out) + "\n"
 
 
 if __name__ == "__main__":
     OUT.write_text(draw(), encoding="utf-8")
-    print(f"wrote {OUT.relative_to(ROOT)}")
+    HISTORY_OUT.write_text(draw_history(), encoding="utf-8")
+    print(f"wrote {OUT.relative_to(ROOT)} and {HISTORY_OUT.relative_to(ROOT)}")

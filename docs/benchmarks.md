@@ -30,6 +30,13 @@ otherwise.
    the tools without the prompt hook saved nothing, and the full evidence pack
    made editing tasks more expensive. All are in the tables below.
 
+## How we got here
+
+Every paid test, in the order it was run, with the cost saved or lost against
+plain Claude Code on the same task.
+
+![We ran 18 tests. 12 were cheaper, 6 cost more.](history-chart.svg)
+
 ## Why "times smaller context" numbers are not used here
 
 A retrieval tool can easily report that its answer is 50 or 70 times smaller
@@ -284,7 +291,7 @@ requests (`611c616`), Express (`a419aa7`) and Django. To check retrieval
 without spending any tokens, run
 `python benchmarks/relevance.py django-test benchmarks/relevance/django.json`.
 
-The chart at the top of the README is drawn from the files in
+The chart at the top of the README and the "How we got here" chart are drawn from the files in
 `benchmarks/results/` by `python benchmarks/make_chart.py` (no model calls).
 
 If your numbers differ from ours, please open an issue with your `share.md`.
