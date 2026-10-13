@@ -67,7 +67,7 @@ rubric for correctness, completeness, citations and maintainability. Compare
 this with the recorded tests and every baseline-pass/assisted-fail regression.
 No quality regression should be hidden behind a better overall pass count.
 
-The 90–95% target is met only for the specific evaluated condition if actual
+A savings claim holds only for the specific evaluated condition if actual
 all-call totals, including setup, demonstrate it and the quality checks hold.
 If savings are smaller, negative, or uncertain, publish that finding. Individual
 task regressions or inadequate coverage prevent an equal-quality claim.

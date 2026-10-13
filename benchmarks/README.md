@@ -1,7 +1,8 @@
 # Measuring the actual goal
 
-The target is 90–95% fewer **total model tokens** with equal or better outcomes.
-No result supporting that target has been measured for BaleContext yet.
+The goal is fewer **total model tokens** with equal or better outcomes. Every
+paid run so far, with its method and raw summary numbers, is on
+[the evidence page](../docs/benchmarks.md).
 
 Use the same agent version, model, reasoning settings, repository commit, task,
 test environment, and starting conversation for the baseline and assisted runs.
@@ -57,7 +58,7 @@ Also check regression tests, source citation correctness, and blinded review of
 the patches/answers. Repeat runs to estimate variance. Publish the corpus, tasks,
 model settings, logs with secrets removed, denominators and exclusions. See the
 [first evaluation plan](first-evaluation.md) for the proposed task set and release
-criteria. No real agent evaluation has been run yet.
+criteria. Results of the paired Claude Code tests are in [docs/benchmarks.md](../docs/benchmarks.md).
 
 ## Paired Claude Code test (uses plan limits)
 

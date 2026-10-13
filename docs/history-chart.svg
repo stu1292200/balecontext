@@ -1,0 +1,116 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="576" viewBox="0 0 960 576" role="img" aria-labelledby="t d" font-family="Inter, -apple-system, Segoe UI, Helvetica, Arial, sans-serif">
+<title id="t">Every test we ran</title>
+<desc id="d">18 tests in the order they were run. 12 were cheaper with BaleContext, 6 cost more.</desc>
+<style>.bg{fill:#ffffff}.ink{fill:#111111}.sub{fill:#5c5b57}.mute{fill:#8a8984}.acc{fill:#2a78d6}.card{fill:#f6f6f3}.good{fill:#0ca30c}.bad{fill:#d03b3b}.goodt{fill:#0a7d0a}.badt{fill:#b22e2e}.mark{fill:none;stroke:#ffffff;stroke-width:3;stroke-linecap:round;stroke-linejoin:round}@media (prefers-color-scheme: dark){.bg{fill:#161b22}.ink{fill:#f0efec}.sub{fill:#b8b7b0}.mute{fill:#8f8e88}.acc{fill:#5598e7}.card{fill:#1f252e}.goodt{fill:#4cc24c}.badt{fill:#e66767}}</style>
+<rect class="bg" width="960" height="576" rx="16"/>
+<text class="ink" x="44.0" y="62.0" font-size="28" font-weight="700" text-anchor="start">We ran 18 tests. 12 were cheaper, 6 cost more.</text>
+<text class="sub" x="44.0" y="96.0" font-size="15" font-weight="400" text-anchor="start">Bug fixes and new features cost more at first. We fixed that, and the tests after it were cheaper again.</text>
+<rect class="card" x="44.0" y="150" width="133.66666666666666" height="118" rx="14"/>
+<text class="ink" x="110.8" y="176.0" font-size="14" font-weight="600" text-anchor="middle">Test 1</text>
+<circle class="good" cx="110.8" cy="204" r="15"/>
+<path class="mark" d="M103.8 204 l5 5 l9 -10"/>
+<text class="goodt" x="110.8" y="240.0" font-size="14" font-weight="700" text-anchor="middle">21% cheaper</text>
+<text class="mute" x="110.8" y="258.0" font-size="12" font-weight="400" text-anchor="middle">Question</text>
+<rect class="card" x="191.66666666666666" y="150" width="133.66666666666666" height="118" rx="14"/>
+<text class="ink" x="258.5" y="176.0" font-size="14" font-weight="600" text-anchor="middle">Test 2</text>
+<circle class="good" cx="258.5" cy="204" r="15"/>
+<path class="mark" d="M251.5 204 l5 5 l9 -10"/>
+<text class="goodt" x="258.5" y="240.0" font-size="14" font-weight="700" text-anchor="middle">3% cheaper</text>
+<text class="mute" x="258.5" y="258.0" font-size="12" font-weight="400" text-anchor="middle">Question</text>
+<rect class="card" x="339.3333333333333" y="150" width="133.66666666666666" height="118" rx="14"/>
+<text class="ink" x="406.2" y="176.0" font-size="14" font-weight="600" text-anchor="middle">Test 3</text>
+<circle class="good" cx="406.2" cy="204" r="15"/>
+<path class="mark" d="M399.2 204 l5 5 l9 -10"/>
+<text class="goodt" x="406.2" y="240.0" font-size="14" font-weight="700" text-anchor="middle">12% cheaper</text>
+<text class="mute" x="406.2" y="258.0" font-size="12" font-weight="400" text-anchor="middle">Question</text>
+<rect class="card" x="487.0" y="150" width="133.66666666666666" height="118" rx="14"/>
+<text class="ink" x="553.8" y="176.0" font-size="14" font-weight="600" text-anchor="middle">Test 4</text>
+<circle class="good" cx="553.8" cy="204" r="15"/>
+<path class="mark" d="M546.8 204 l5 5 l9 -10"/>
+<text class="goodt" x="553.8" y="240.0" font-size="14" font-weight="700" text-anchor="middle">23% cheaper</text>
+<text class="mute" x="553.8" y="258.0" font-size="12" font-weight="400" text-anchor="middle">Question</text>
+<rect class="card" x="634.6666666666666" y="150" width="133.66666666666666" height="118" rx="14"/>
+<text class="ink" x="701.5" y="176.0" font-size="14" font-weight="600" text-anchor="middle">Test 5</text>
+<circle class="good" cx="701.5" cy="204" r="15"/>
+<path class="mark" d="M694.5 204 l5 5 l9 -10"/>
+<text class="goodt" x="701.5" y="240.0" font-size="14" font-weight="700" text-anchor="middle">8% cheaper</text>
+<text class="mute" x="701.5" y="258.0" font-size="12" font-weight="400" text-anchor="middle">Question</text>
+<rect class="card" x="782.3333333333333" y="150" width="133.66666666666666" height="118" rx="14"/>
+<text class="ink" x="849.2" y="176.0" font-size="14" font-weight="600" text-anchor="middle">Test 6</text>
+<circle class="good" cx="849.2" cy="204" r="15"/>
+<path class="mark" d="M842.2 204 l5 5 l9 -10"/>
+<text class="goodt" x="849.2" y="240.0" font-size="14" font-weight="700" text-anchor="middle">27% cheaper</text>
+<text class="mute" x="849.2" y="258.0" font-size="12" font-weight="400" text-anchor="middle">Question</text>
+<rect class="card" x="44.0" y="282" width="133.66666666666666" height="118" rx="14"/>
+<text class="ink" x="110.8" y="308.0" font-size="14" font-weight="600" text-anchor="middle">Test 7</text>
+<circle class="good" cx="110.8" cy="336" r="15"/>
+<path class="mark" d="M103.8 336 l5 5 l9 -10"/>
+<text class="goodt" x="110.8" y="372.0" font-size="14" font-weight="700" text-anchor="middle">18% cheaper</text>
+<text class="mute" x="110.8" y="390.0" font-size="12" font-weight="400" text-anchor="middle">Question</text>
+<rect class="card" x="191.66666666666666" y="282" width="133.66666666666666" height="118" rx="14"/>
+<text class="ink" x="258.5" y="308.0" font-size="14" font-weight="600" text-anchor="middle">Test 8</text>
+<circle class="bad" cx="258.5" cy="336" r="15"/>
+<path class="mark" d="M252.5 330 l12 12 M264.5 330 l-12 12"/>
+<text class="badt" x="258.5" y="372.0" font-size="14" font-weight="700" text-anchor="middle">3% more</text>
+<text class="mute" x="258.5" y="390.0" font-size="12" font-weight="400" text-anchor="middle">Question</text>
+<rect class="card" x="339.3333333333333" y="282" width="133.66666666666666" height="118" rx="14"/>
+<text class="ink" x="406.2" y="308.0" font-size="14" font-weight="600" text-anchor="middle">Test 9</text>
+<circle class="good" cx="406.2" cy="336" r="15"/>
+<path class="mark" d="M399.2 336 l5 5 l9 -10"/>
+<text class="goodt" x="406.2" y="372.0" font-size="14" font-weight="700" text-anchor="middle">9% cheaper</text>
+<text class="mute" x="406.2" y="390.0" font-size="12" font-weight="400" text-anchor="middle">Question</text>
+<rect class="card" x="487.0" y="282" width="133.66666666666666" height="118" rx="14"/>
+<text class="ink" x="553.8" y="308.0" font-size="14" font-weight="600" text-anchor="middle">Test 10</text>
+<circle class="bad" cx="553.8" cy="336" r="15"/>
+<path class="mark" d="M547.8 330 l12 12 M559.8 330 l-12 12"/>
+<text class="badt" x="553.8" y="372.0" font-size="14" font-weight="700" text-anchor="middle">1% more</text>
+<text class="mute" x="553.8" y="390.0" font-size="12" font-weight="400" text-anchor="middle">Question</text>
+<rect class="card" x="634.6666666666666" y="282" width="133.66666666666666" height="118" rx="14"/>
+<text class="ink" x="701.5" y="308.0" font-size="14" font-weight="600" text-anchor="middle">Test 11</text>
+<circle class="good" cx="701.5" cy="336" r="15"/>
+<path class="mark" d="M694.5 336 l5 5 l9 -10"/>
+<text class="goodt" x="701.5" y="372.0" font-size="14" font-weight="700" text-anchor="middle">31% cheaper</text>
+<text class="mute" x="701.5" y="390.0" font-size="12" font-weight="400" text-anchor="middle">Question</text>
+<rect class="card" x="782.3333333333333" y="282" width="133.66666666666666" height="118" rx="14"/>
+<text class="ink" x="849.2" y="308.0" font-size="14" font-weight="600" text-anchor="middle">Test 12</text>
+<circle class="bad" cx="849.2" cy="336" r="15"/>
+<path class="mark" d="M843.2 330 l12 12 M855.2 330 l-12 12"/>
+<text class="badt" x="849.2" y="372.0" font-size="14" font-weight="700" text-anchor="middle">37% more</text>
+<text class="mute" x="849.2" y="390.0" font-size="12" font-weight="400" text-anchor="middle">Bug fix</text>
+<rect class="card" x="44.0" y="414" width="133.66666666666666" height="118" rx="14"/>
+<text class="ink" x="110.8" y="440.0" font-size="14" font-weight="600" text-anchor="middle">Test 13</text>
+<circle class="bad" cx="110.8" cy="468" r="15"/>
+<path class="mark" d="M104.8 462 l12 12 M116.8 462 l-12 12"/>
+<text class="badt" x="110.8" y="504.0" font-size="14" font-weight="700" text-anchor="middle">40% more</text>
+<text class="mute" x="110.8" y="522.0" font-size="12" font-weight="400" text-anchor="middle">Bug fix</text>
+<rect class="card" x="191.66666666666666" y="414" width="133.66666666666666" height="118" rx="14"/>
+<text class="ink" x="258.5" y="440.0" font-size="14" font-weight="600" text-anchor="middle">Test 14</text>
+<circle class="bad" cx="258.5" cy="468" r="15"/>
+<path class="mark" d="M252.5 462 l12 12 M264.5 462 l-12 12"/>
+<text class="badt" x="258.5" y="504.0" font-size="14" font-weight="700" text-anchor="middle">7% more</text>
+<text class="mute" x="258.5" y="522.0" font-size="12" font-weight="400" text-anchor="middle">Feature</text>
+<rect class="card" x="339.3333333333333" y="414" width="133.66666666666666" height="118" rx="14"/>
+<text class="ink" x="406.2" y="440.0" font-size="14" font-weight="600" text-anchor="middle">Test 15</text>
+<circle class="bad" cx="406.2" cy="468" r="15"/>
+<path class="mark" d="M400.2 462 l12 12 M412.2 462 l-12 12"/>
+<text class="badt" x="406.2" y="504.0" font-size="14" font-weight="700" text-anchor="middle">33% more</text>
+<text class="mute" x="406.2" y="522.0" font-size="12" font-weight="400" text-anchor="middle">Feature</text>
+<rect class="card" x="487.0" y="414" width="133.66666666666666" height="118" rx="14"/>
+<text class="ink" x="553.8" y="440.0" font-size="14" font-weight="600" text-anchor="middle">Test 16</text>
+<circle class="good" cx="553.8" cy="468" r="15"/>
+<path class="mark" d="M546.8 468 l5 5 l9 -10"/>
+<text class="goodt" x="553.8" y="504.0" font-size="14" font-weight="700" text-anchor="middle">35% cheaper</text>
+<text class="mute" x="553.8" y="522.0" font-size="12" font-weight="400" text-anchor="middle">Long chat</text>
+<rect class="card" x="634.6666666666666" y="414" width="133.66666666666666" height="118" rx="14"/>
+<text class="ink" x="701.5" y="440.0" font-size="14" font-weight="600" text-anchor="middle">Test 17</text>
+<circle class="good" cx="701.5" cy="468" r="15"/>
+<path class="mark" d="M694.5 468 l5 5 l9 -10"/>
+<text class="goodt" x="701.5" y="504.0" font-size="14" font-weight="700" text-anchor="middle">7% cheaper</text>
+<text class="mute" x="701.5" y="522.0" font-size="12" font-weight="400" text-anchor="middle">Feature</text>
+<rect class="card" x="782.3333333333333" y="414" width="133.66666666666666" height="118" rx="14"/>
+<text class="ink" x="849.2" y="440.0" font-size="14" font-weight="600" text-anchor="middle">Test 18</text>
+<circle class="good" cx="849.2" cy="468" r="15"/>
+<path class="mark" d="M842.2 468 l5 5 l9 -10"/>
+<text class="goodt" x="849.2" y="504.0" font-size="14" font-weight="700" text-anchor="middle">4% cheaper</text>
+<text class="mute" x="849.2" y="522.0" font-size="12" font-weight="400" text-anchor="middle">Bug fix</text>
+</svg>

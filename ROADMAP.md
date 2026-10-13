@@ -31,4 +31,4 @@
 - Text extraction for PDFs and office documents, then optional media workflows.
 
 The guiding target remains premium-quality outcomes with much less total model
-usage. A universal 90–95% reduction is not promised; quality comes first.
+usage. No fixed reduction is promised; quality comes first.

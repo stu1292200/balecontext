@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="450" viewBox="0 0 960 450" role="img" aria-labelledby="t d" font-family="Inter, -apple-system, Segoe UI, Helvetica, Arial, sans-serif">
+<title id="t">What BaleContext saves</title>
+<desc id="d">Three numbers: how much less Claude uses with BaleContext in long chats, quick questions and bug fixes, and how much cheaper each is.</desc>
+<style>.bg{fill:#ffffff}.ink{fill:#111111}.sub{fill:#5c5b57}.mute{fill:#8a8984}.acc{fill:#2a78d6}.card{fill:#f6f6f3}.good{fill:#0ca30c}.bad{fill:#d03b3b}.goodt{fill:#0a7d0a}.badt{fill:#b22e2e}.mark{fill:none;stroke:#ffffff;stroke-width:3;stroke-linecap:round;stroke-linejoin:round}@media (prefers-color-scheme: dark){.bg{fill:#161b22}.ink{fill:#f0efec}.sub{fill:#b8b7b0}.mute{fill:#8f8e88}.acc{fill:#5598e7}.card{fill:#1f252e}.goodt{fill:#4cc24c}.badt{fill:#e66767}}</style>
+<rect class="bg" width="960" height="450" rx="16"/>
+<text class="ink" x="44.0" y="62.0" font-size="28" font-weight="700" text-anchor="start">Claude with BaleContext uses less and costs less</text>
+<text class="sub" x="44.0" y="96.0" font-size="15" font-weight="400" text-anchor="start">We gave Claude the same tasks twice: once alone and once with BaleContext. Answers were just as good.</text>
+<rect class="card" x="44.0" y="150" width="277.3333333333333" height="220" rx="14"/>
+<text class="ink" x="182.7" y="192.0" font-size="17" font-weight="600" text-anchor="middle">Long chats</text>
+<text class="acc" x="182.7" y="266.0" font-size="64" font-weight="700" text-anchor="middle">74%</text>
+<text class="ink" x="182.7" y="296.0" font-size="17" font-weight="600" text-anchor="middle">less usage</text>
+<text class="sub" x="182.7" y="340.0" font-size="16" font-weight="400" text-anchor="middle">and 35% cheaper</text>
+<rect class="card" x="341.3333333333333" y="150" width="277.3333333333333" height="220" rx="14"/>
+<text class="ink" x="480.0" y="192.0" font-size="17" font-weight="600" text-anchor="middle">Questions about code</text>
+<text class="acc" x="480.0" y="266.0" font-size="64" font-weight="700" text-anchor="middle">68%</text>
+<text class="ink" x="480.0" y="296.0" font-size="17" font-weight="600" text-anchor="middle">less usage</text>
+<text class="sub" x="480.0" y="340.0" font-size="16" font-weight="400" text-anchor="middle">and 5% cheaper</text>
+<rect class="card" x="638.6666666666666" y="150" width="277.3333333333333" height="220" rx="14"/>
+<text class="ink" x="777.3" y="192.0" font-size="17" font-weight="600" text-anchor="middle">Bug fixes and features</text>
+<text class="acc" x="777.3" y="266.0" font-size="64" font-weight="700" text-anchor="middle">14%</text>
+<text class="ink" x="777.3" y="296.0" font-size="17" font-weight="600" text-anchor="middle">less usage</text>
+<text class="sub" x="777.3" y="340.0" font-size="16" font-weight="400" text-anchor="middle">and 6% cheaper</text>
+<text class="mute" x="44.0" y="416.0" font-size="14" font-weight="400" text-anchor="start">Less usage means you reach your Claude limit later.</text>
+</svg>
