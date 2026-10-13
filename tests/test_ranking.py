@@ -1027,6 +1027,33 @@ class HookTest(unittest.TestCase):
         # A word the question does not write as a name gets no pack.
         self.assertIsNone(hook.prompt_pack(project, "Where is the compose step used?"))
 
+    def test_a_task_that_changes_code_gets_pointers_not_source(self):
+        (self.root / "shop" / "handlers.py").parent.mkdir(exist_ok=True)
+        (self.root / "shop" / "handlers.py").write_text(
+            "class BaseHandler:\n    def __init__(self):\n        self.hooks = []\n\n    def load_middleware(self):\n        for middleware in settings.MIDDLEWARE:\n"
+            "            mw = middleware()\n            if hasattr(mw, \"process_view\"):\n                self.hooks.append(mw.process_view)\n", encoding="utf-8")
+        (self.root / "tests").mkdir(exist_ok=True)
+        (self.root / "docs").mkdir(exist_ok=True)
+        (self.root / "tests" / "test_handlers.py").write_text("def test_load_middleware():\n    BaseHandler().load_middleware()\n", encoding="utf-8")
+        (self.root / "docs" / "handlers.txt").write_text("load_middleware\n===============\n\nCollects every hook.\n", encoding="utf-8")
+        from balecontext import hook
+        project = Project(self.root)
+        project.index()
+        text, response = hook.prompt_pack(project, "load_middleware() collects the hooks in the wrong order. Find the cause in the handler and fix it, then add a test next to the existing handler tests.")
+        self.assertEqual(response["mode"], "pointers")
+        self.assertEqual(response["parts"], [])
+        self.assertLess(len(text), hook.POINTER_CHARS)
+        self.assertIn("=== CODE (path:lines name)\nshop/handlers.py:5-9 BaseHandler.load_middleware  (entry)", text)
+        self.assertIn("shop/handlers.py:2-3 BaseHandler.__init__  (constructor of BaseHandler", text)
+        self.assertIn("=== TESTS naming load_middleware or handlers\ntests/test_handlers.py (1 line: 2)", text)
+        self.assertIn("=== DOCS naming load_middleware or handlers\ndocs/handlers.txt (1 line: 1)", text)
+        self.assertNotIn("for middleware in settings.MIDDLEWARE", text)  # no source bodies
+        # A question stays a question even when it says "add": it gets the evidence pack.
+        text, response = hook.prompt_pack(project, "How do I add a hook that load_middleware() collects?")
+        self.assertNotIn("mode", response)
+        self.assertIn("for middleware in settings.MIDDLEWARE", text)
+        self.assertFalse(hook.edit_prompt("Explain load_middleware(). Then add a note on ordering. Do not modify any files."))
+
     def test_an_outline_covers_the_whole_definition_behind_a_cut_block(self):
         body = "".join(f"    if kind == {i}:\n        return handle_{i}(request)\n" for i in range(60))
         (self.root / "dispatch.py").write_text("def dispatch(request, kind):\n" + body + "    return None\n", encoding="utf-8")

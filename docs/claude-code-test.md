@@ -133,6 +133,12 @@ end. The folder must be clean in git, or the script refuses to start.
 py benchmarks\claude_pair.py C:\path\to\django-test --question-file benchmarks\tasks\django-bug-process-view-order.txt --allow-edits --setup-patch benchmarks\tasks\django-bug-process-view-order.patch --runs 1
 ```
 
+For such tasks the hook sends pointers, not source: the definitions it would have shown as
+`path:lines name`, plus the test and doc files that name what the task names, about 2k
+characters in all. Claude has to read the lines it edits anyway, so source sent up front only
+added cost (measured 7 to 41% more than plain Claude Code on four editing tasks before this
+change). `hook-log.jsonl` shows `"mode": "pointers"` for those prompts.
+
 The results folder contains your local paths, so it is ignored by git. At the end of
 each test, `claude_pair.py` writes `share.md` in that folder and prints its path: the
 questions, the summary, each question's tokens and cost, every model call's usage for

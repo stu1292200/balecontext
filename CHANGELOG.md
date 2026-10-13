@@ -2,6 +2,13 @@
 
 ## Unreleased — ranking and evidence packs
 
+- Pointer pack for tasks that change code: a prompt written as an instruction to fix, add,
+  implement or rename (not a question, and not one that says "do not modify") gets about
+  1.5 to 2.5k characters of pointers instead of source: the definitions an evidence pack would
+  show as `path:lines name`, the constructor of a class it names, and the test and doc files
+  naming what the prompt names, with line numbers. Claude reads the lines it edits in any case,
+  so source sent up front was written to the cache for nothing (measured: 7 to 41% higher cost
+  than plain Claude Code on four editing tasks). The hook log records `mode: pointers`.
 - Bigger tasks for the paired test: `claude_pair.py --allow-edits` lets Claude edit files
   and saves each run's changes as a diff (also in `share.md`); `--setup-patch` plants a bug
   before every run and undoes it. `benchmarks/tasks/` holds two planted bugs and two
