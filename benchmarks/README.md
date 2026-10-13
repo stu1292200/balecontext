@@ -1,8 +1,8 @@
 # Measuring the actual goal
 
-The target is 90–95% fewer **total model tokens** with equal or better outcomes.
-That target has not been reached yet. Every paid run so far, with its method and
-raw summary numbers, is on [the evidence page](../docs/benchmarks.md).
+The goal is fewer **total model tokens** with equal or better outcomes. Every
+paid run so far, with its method and raw summary numbers, is on
+[the evidence page](../docs/benchmarks.md).
 
 Use the same agent version, model, reasoning settings, repository commit, task,
 test environment, and starting conversation for the baseline and assisted runs.

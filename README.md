@@ -14,15 +14,13 @@ coding agents focused source excerpts and relationships. Everything runs on
 your computer. No LLM is used for indexing or retrieval. No API key, cloud
 account, subscription, embedding download, or telemetry is required.
 
-Created by **Muhammad Baleegh**. This is an original implementation, inspired by
-the general idea of graph-assisted code navigation. It is not affiliated with Graphify.
+Created by **Muhammad Baleegh**. This is an original implementation.
 
 **Status: v0.1.0 alpha.** Core CLI and MCP protocol tests are automated. Live
 integration tests in individual agent applications are still pending. Early
 paired Claude Code tests measured 65–74% fewer total tokens on questions about
 code and 12–16% on editing tasks, with smaller cost savings; see
-[the evidence](docs/benchmarks.md). The 90–95% total-token reduction is a
-research target, not a measured result or guarantee.
+[the evidence](docs/benchmarks.md).
 
 The source checkout now also includes automatic background refresh and stricter
 benchmark quality checks. These changes are **unreleased**; the v0.1.0 download
@@ -248,5 +246,4 @@ efficiency improvements are especially welcome.
 ## License
 
 [MIT](LICENSE) · Copyright 2026 Muhammad Baleegh.
-Third-party dependencies retain their own licenses. No Graphify code,
-documentation, branding, or assets are bundled in this project.
+Third-party dependencies retain their own licenses.
