@@ -8,7 +8,7 @@ import math
 import os
 import re
 from collections import deque
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 
 from . import rank
 from .files import SECRET_CONTENT
@@ -105,7 +105,7 @@ CALLERS_QUESTION = re.compile(
     r"\b(?:who|what)\s+(?:else\s+)?(?:calls|invokes|uses|references|imports|depends on|relies on)\b(?!\s+(?:does|do|did|are|is|was|were|made|happen))"
     r"|\bwhich\s+(?:\w+\s+){0,2}?(?:code|functions?|methods?|classes|modules?|files?|places?|parts?|tests?|views?)(?:\s+\w+){0,3}?\s+"
     r"(?:call|calls|invoke|invokes|use|uses|reference|references|import|imports)\b"
-    r"|\bcall(?:ers?|[- ]sites?)\b|\busages?\b|\b(?:used|called) by\b|\breferences? to\b|\bdependents\b"
+    r"|\bcallers\b|\bcallers?\s+of\b|\bcall[- ]sites?\b|\busages?\b|\b(?:used|called) by\b|\breferences? to\b|\bdependents\b"
     r"|\bwhere\b(?:[^.?!]|\.(?=\w)){0,60}?\b(?:called|used|invoked|referenced|imported)\b"
     r"|\b(?:would|will|could|might)\s+(?:\w+\s+){0,3}?(?:break|fail|be affected)\b"
     r"|\bif\s+(?:i|we|you|someone)\s+(?:change|changed|rename|renamed|remove|removed|delete|deleted|modify|modified)\b"
@@ -133,8 +133,31 @@ def _symbol_table(project: Project, db) -> rank.SymbolTable:
     if cached and cached[0] == generation:
         return cached[1]
     table = rank.SymbolTable(db.execute("SELECT id,path,name,kind,start,end FROM nodes"))
+    # The project's names are not search words, unless one is also a class's (the `Hono` class in hono).
+    classes = lambda name: any(table.entries[i].kind == "class" and table.entries[i].category == "code" for i in table.by_leaf.get(name, ()))
+    table.names = {table.package} | {name for name in {project.root.name.lower(), *_declared_names(project.root)} if not classes(name)}
+    table.names.discard("")
     _TABLES[str(project.db_path)] = (generation, table)
     return table
+
+
+def _declared_names(root: Path) -> set[str]:
+    """The names the project gives itself in package.json, pyproject.toml or setup.cfg."""
+    names: set[str] = set()
+    try:
+        package = json.loads((root / "package.json").read_text(encoding="utf-8"))
+        if isinstance(package.get("name"), str):
+            names.add(package["name"].rsplit("/", 1)[-1].lower())
+    except (OSError, ValueError):
+        pass
+    for file in ("pyproject.toml", "setup.cfg"):
+        try:
+            found = re.search(r'^name\s*=\s*"?([\w.-]+)"?', (root / file).read_text(encoding="utf-8"), re.M)
+        except OSError:
+            continue
+        if found:
+            names.add(found.group(1).lower())
+    return names
 
 
 def _ranked(project: Project, db, table: rank.SymbolTable, parsed: rank.Query, query: str) -> tuple[list[dict], list]:
@@ -776,6 +799,50 @@ def _closure(db, node_id: str, path: str, depth: int = 4) -> set[str]:
     return seen
 
 
+def _dispatcher_first(db, files: _Files, table: rank.SymbolTable, parsed: rank.Query, picked: list) -> list:
+    """A hook that many classes define is run by one place that looks it up by name: every
+    middleware defines `process_view`, and `BaseHandler.load_middleware` collects them with
+    `hasattr(mw_instance, "process_view")`. A question naming such a hook without saying whose
+    ("both define process_view()") is about how the hooks are run, so that dispatcher leads and the
+    definitions follow."""
+    if not picked:
+        return picked
+    lead = picked[0][1]
+    definitions = [table.entries[i] for i in table.by_leaf.get(lead.leaf, ()) if table.entries[i].category == "code" and table.entries[i].kind in ("function", "method")]
+    identifier = next((i for i in parsed.identifiers if i.leaf.lower() == lead.leaf), None)
+    if len(definitions) < 4 or identifier is None or identifier.qualifiers:
+        return picked
+    owners = {owner for entry in definitions for owner in entry.owner}
+    if {i.leaf.lower() for i in parsed.identifiers if i.is_class} & owners or set(parsed.words) & {rank.stem(t) for owner in owners for t in rank.split_identifier(owner)}:
+        return picked  # the question says whose hook it means
+    leaf = re.escape(identifier.leaf)
+    by_name = re.compile(rf"[\"']{leaf}[\"']")
+    as_value = re.compile(rf"\.\s*{leaf}\b(?!\s*\()")
+    nodes: dict[str, dict] = {}
+    weight: dict[str, int] = {}
+    for hit in _named_lines(db, files, identifier.leaf, member=False):
+        if rank.path_class(hit["path"]) != "code" or re.match(rf"\s*(?:async\s+)?(?:def|function)\s+{leaf}\b", hit["text"]):
+            continue
+        points = 2 if by_name.search(hit["text"]) else 1 if as_value.search(hit["text"]) else 0
+        if not points:
+            continue
+        around = [dict(r) for r in db.execute("SELECT id,path,name,kind,start,end FROM nodes WHERE path=? AND kind IN ('function','method') AND start<=? AND end>=?", (hit["path"], hit["line"], hit["line"]))]
+        inner = min(around, key=lambda n: n["end"] - n["start"], default=None)
+        if inner is None or inner["name"].rsplit(".", 1)[-1].lower() == lead.leaf:
+            continue
+        nodes[inner["id"]] = inner
+        weight[inner["id"]] = weight.get(inner["id"], 0) + points
+    if not weight:
+        return picked
+    best = max(weight, key=lambda i: (weight[i], nodes[i]["path"], -nodes[i]["start"]))
+    if weight[best] < 2:
+        return picked
+    entry = next((e for e in table.entries if e.id == best), None)
+    if entry is None:
+        return picked
+    return [(picked[0][0], entry, set())] + [item for item in picked if item[1].id != best]
+
+
 def _call_root(db, seeds: list, ranked: list) -> list:
     """Lead with the outermost function: the matching definition whose call chain reaches the most other matches.
 
@@ -1125,10 +1192,11 @@ def context(project: Project, query: str, budget: int = 3000, session: dict | No
     limit = min(budget, cap)
     with project.connect(snapshot=True) as db:
         table = _symbol_table(project, db)
-        parsed = rank.parse(query, table.package)
+        parsed = rank.parse(query, getattr(table, "names", table.package))
         body, ranked = _ranked(project, db, table, parsed, query)
         picked = rank.pick_seeds(parsed, ranked)
         files = _Files(db, (str(project.db_path), _generation(db)))
+        picked = _dispatcher_first(db, files, table, parsed, picked)
         # The definition a callers question names leads as it is, not the outermost of its callers.
         named = next((seed for seed in picked if seed[2]), picked[0] if picked else None)
         if named and named[1].kind in ("function", "method", "class") and CALLERS_QUESTION.search(query):

@@ -2,6 +2,18 @@
 
 ## Unreleased — ranking and evidence packs
 
+- Bigger tasks for the paired test: `claude_pair.py --allow-edits` lets Claude edit files
+  and saves each run's changes as a diff (also in `share.md`); `--setup-patch` plants a bug
+  before every run and undoes it. `benchmarks/tasks/` holds two planted bugs and two
+  features for Django and requests, with notes on what a correct result looks like, and
+  `benchmarks/questions/django-long-followups.txt` makes an eight-question conversation.
+- Ranking for task prompts: a hook that many classes define (`process_view`) leads with the
+  place that runs it by name (`BaseHandler.load_middleware`) when the question does not say
+  whose; a word that is a file's whole name and no symbol's (`listurls`) finds that file's
+  code; a name written as the question writes it (`Session`, not `session()`) wins, and two
+  spellings of one symbol pick it once; "the caller" as a noun is no longer a callers
+  question; the project's own names (its folder and the name in package.json or
+  pyproject.toml) are not search words unless a class carries one.
 - Symbol-first ranking: identifiers in the query (`form.is_valid`, `BaseForm full_clean`)
   are matched by name and class qualifier before any body-text match; instruction words
   such as "cite", "files" and "line numbers" are ignored; implementation code ranks

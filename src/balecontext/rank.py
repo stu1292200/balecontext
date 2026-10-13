@@ -1,6 +1,8 @@
 """Symbol-first ranking: identifiers and class qualifiers outweigh body-text frequency."""
 from __future__ import annotations
 
+from collections.abc import Iterable
+
 import math
 import os
 import re
@@ -124,12 +126,16 @@ def _is_identifier(token: str, called: bool) -> bool:
     return bool(re.match(r"[A-Z]{2,}[a-z]", token))
 
 
-def parse(query: str, project_name: str = "") -> Query:
+def parse(query: str, project_name: str | Iterable[str] = "") -> Query:
     """Read a question as identifiers and stemmed words.
 
-    `project_name` is the project's own package (`django`): a question uses it as the
-    project's name ("Django's URL resolver"), so as a plain word it names no definition.
+    `project_name` is the project's own name, or several of them: its package (`django`), its
+    folder and the name it declares (`express` in package.json). A question uses them as the
+    project's name ("Django's URL resolver", "an Express app"), so as plain words they name no
+    definition and no file.
     """
+    names = {project_name.lower()} if isinstance(project_name, str) else {name.lower() for name in project_name}
+    names.discard("")
     result = Query()
     seen_words: set[str] = set()
     seen_identifiers: set[str] = set()
@@ -139,14 +145,15 @@ def parse(query: str, project_name: str = "") -> Query:
     result.wants_types = bool(lowered & {"type", "types", "interface", "interfaces", "typing"})
     result.possessives = {(stem(owner), stem(thing)) for owner, thing in re.findall(r"\b([A-Za-z]+)['\u2019]s\s+([A-Za-z]+)", query)}
     result.possessives |= {(stem(owner), stem(thing)) for thing, owner in re.findall(r"\b([A-Za-z]+)\s+of\s+(?:a|an|the|each|every)\s+([A-Za-z]+)", query)}
-    result.possessives = {(owner, thing) for owner, thing in result.possessives if owner != stem(project_name)} if project_name else result.possessives
+    name_stems = {stem(name) for name in names}
+    result.possessives = {(owner, thing) for owner, thing in result.possessives if owner not in name_stems}
     tokens = [match.group(0) for match in TOKEN.finditer(query)]
     for position, token in enumerate(tokens):
         previous = tokens[position - 1].lower() if position else ""
         following = tokens[position + 1].lower() if position + 1 < len(tokens) else ""
         called = token.endswith("()")
         token = token.removesuffix("()").strip(".")
-        if not token or not called and token.lower() == project_name:
+        if not token or not called and token.lower() in names:
             continue
         if token.lower().endswith(CODE_EXTENSIONS + DOC_EXTENSIONS) and "." in token:
             # A file name: keep its stem as a path word.
@@ -273,6 +280,7 @@ def score(table: SymbolTable, query: Query, body_scores: dict[str, float] | None
         candidates.update(by_id[i] for i in body_scores if i in by_id)
     word_idf = {word: table.idf(table.by_token.get(word, []) + table.by_path_token.get(word, [])) for word in query.words}
     total_terms = max(1, len(query.words))
+    symbol_words = {word for word in query.words if any(table.entries[i].category == "code" for i in table.by_token.get(word, ()))}
     # Agents list identifiers most-important first.
     order_bonus = {identifier.text: 1 + 0.15 * (len(query.identifiers) - position) / len(query.identifiers) for position, identifier in enumerate(query.identifiers)}
     results: list[tuple[float, Entry, set[str]]] = []
@@ -312,6 +320,9 @@ def score(table: SymbolTable, query: Query, body_scores: dict[str, float] | None
                         bonus += 100
                 value += bonus * order_bonus[identifier.text]
                 matched.add(identifier.text)
+            if entry.leaf == leaf and len(table.by_leaf.get(leaf, ())) > 1 and entry.name.rsplit(".", 1)[-1].lstrip("#") == identifier.leaf:
+                # Written the way the question writes it: `Session` is the class, `session()` the function.
+                value += 800
         # Members of a class the query names ("How does CsrfViewMiddleware check ...").
         if class_names & set(entry.owner):
             value += 400
@@ -331,7 +342,8 @@ def score(table: SymbolTable, query: Query, body_scores: dict[str, float] | None
         # "extends" names the class and "render" the method (TemplateTagNode in defaulttags.py adds nothing).
         value += sum((60 if leaf_hits and w not in entry.path_tokens else 30) * word_idf[w] for w in owner_hits) * (0.5 + coverage)
         value += sum(30 * word_idf[w] for w in partial) * (0.5 + coverage)
-        value += sum(12 * word_idf[w] for w in path_hits)
+        # A word that is a file's whole name and no symbol's ("the listurls command") points at that file's code.
+        value += sum((150 if w == entry.file_stem and entry.category == "code" and w not in symbol_words else 12) * word_idf[w] for w in path_hits)
         value += body_scores.get(entry.id, 0.0)
         if value <= 0:
             continue
@@ -367,9 +379,11 @@ def pick_seeds(query: Query, ranked: list[tuple[float, Entry, set[str]]], limit:
     seeds: list[tuple[float, Entry, set[str]]] = []
     used_ids: set[str] = set()
     for identifier in query.identifiers:
-        best = next((item for item in ranked if identifier.text in item[2] and item[1].category == "code" and item[1].id not in used_ids), None)
-        best = best or next((item for item in ranked if identifier.text in item[2] and item[1].id not in used_ids), None)
-        if best:
+        # Two spellings of one symbol (`requests.Session`, `Session`) pick it once; the second does not
+        # fall through to the next match (the function `session`).
+        best = next((item for item in ranked if identifier.text in item[2] and item[1].category == "code"), None)
+        best = best or next((item for item in ranked if identifier.text in item[2]), None)
+        if best and best[1].id not in used_ids:
             seeds.append(best)
             used_ids.add(best[1].id)
     if not ranked:

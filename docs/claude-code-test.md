@@ -118,6 +118,21 @@ and `block` template tags), are in one Django conversation:
 py benchmarks\claude_pair.py C:\path\to\django-test --question-file benchmarks\questions\django-request-handling.txt --followup-file benchmarks\questions\django-hard-followups.txt --runs 3
 ```
 
+### Bigger tasks: find a bug, add a feature
+
+Small questions stop at about 70 to 80% saved, because Claude Code's own setup costs the
+same on both sides at every step. Bigger tasks, where plain Claude Code needs ten or more
+steps, are where the difference grows. `benchmarks\tasks\` holds two planted bugs and two
+features for the Django and requests folders, with notes on what a correct result looks like
+(`benchmarks\tasks\README.md`). They run with `--allow-edits`, which lets Claude edit files
+(still no shell), saves each run's changes as `runN-<arm>.diff` and in `share.md`, and puts the
+folder back as it was. `--setup-patch` plants the bug before every run and removes it at the
+end. The folder must be clean in git, or the script refuses to start.
+
+```
+py benchmarks\claude_pair.py C:\path\to\django-test --question-file benchmarks\tasks\django-bug-process-view-order.txt --allow-edits --setup-patch benchmarks\tasks\django-bug-process-view-order.patch --runs 1
+```
+
 The results folder contains your local paths, so it is ignored by git. At the end of
 each test, `claude_pair.py` writes `share.md` in that folder and prints its path: the
 questions, the summary, each question's tokens and cost, every model call's usage for

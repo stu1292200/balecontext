@@ -1213,3 +1213,67 @@ class HookTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TaskPromptTest(unittest.TestCase):
+    """Prompts for bigger tasks: a planted bug to find, a feature to add across files."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix="balecontext-task-")
+        self.root = Path(self.temporary.name).resolve()
+        middleware = "class {name}Middleware:\n    def process_request(self, request):\n        return None\n\n    def process_view(self, request, view_func, view_args, view_kwargs):\n        return None\n"
+        for name, text in {
+            "shop/handlers/base.py": (
+                "class BaseHandler:\n    def load_middleware(self):\n        self._view_middleware = []\n        for middleware in settings.MIDDLEWARE:\n"
+                "            mw_instance = middleware()\n            if hasattr(mw_instance, \"process_view\"):\n"
+                "                self._view_middleware.insert(0, mw_instance.process_view)\n\n"
+                "    def _get_response(self, request):\n        for middleware_method in self._view_middleware:\n            response = middleware_method(request, None, (), {})\n        return response\n"),
+            "shop/middleware/audit.py": middleware.format(name="Audit"),
+            "shop/middleware/rate.py": middleware.format(name="RateLimit"),
+            "shop/middleware/csrf.py": middleware.format(name="Csrf"),
+            "shop/middleware/auth.py": middleware.format(name="Login"),
+            "shop/management/commands/listurls.py": (
+                "class Command:\n    def add_arguments(self, parser):\n        parser.add_argument(\"--prefix\", default=\"\")\n\n"
+                "    def handle(self, *args, **options):\n        for pattern in get_patterns():\n            if pattern.route.startswith(options[\"prefix\"]):\n                self.stdout.write(pattern.route)\n"),
+            "shop/sessions.py": (
+                "class Session:\n    def __init__(self):\n        self.headers = {}\n        self.timeout = None\n\n"
+                "    def request(self, method, url, timeout=None):\n        return self.send(method, url, timeout or self.timeout)\n\n"
+                "    def send(self, method, url, timeout):\n        return timeout\n\n\n"
+                "def session():\n    return Session()\n"),
+            "package.json": '{"name": "@acme/shop", "version": "1.0.0"}\n',
+        }.items():
+            target = self.root / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(text, encoding="utf-8")
+        self.project = Project(self.root)
+
+    def tearDown(self):
+        self.temporary.cleanup()
+
+    def names(self, response):
+        return [(source["name"], source["path"]) for source in response["sources"]]
+
+    def test_a_hook_many_classes_define_leads_with_the_place_that_runs_it(self):
+        response = context(self.project, "Two middlewares both define process_view() and they run in the wrong order on this checkout. Find the cause in the handler code and fix it.")
+        self.assertEqual(self.names(response)[0], ("BaseHandler.load_middleware", "shop/handlers/base.py"))
+        # Said whose, the question is about that hook, not about how hooks are run.
+        response = context(self.project, "How does AuditMiddleware.process_view() decide what to do?")
+        self.assertEqual(self.names(response)[0], ("AuditMiddleware.process_view", "shop/middleware/audit.py"))
+
+    def test_a_class_beats_a_function_spelled_in_lowercase(self):
+        response = context(self.project, "Add a default timeout attribute to shop.Session that Session.request() uses when none is given; s = Session(); s.timeout = 5")
+        names = self.names(response)
+        self.assertNotIn(("session", "shop/sessions.py"), names)
+        self.assertTrue(all(name.startswith("Session") for name, _ in names), names)
+
+    def test_a_file_name_the_question_uses_finds_that_files_code(self):
+        response = context(self.project, "Add an --exclude option to the listurls management command that hides every route starting with a given prefix")
+        self.assertEqual(self.names(response)[0][1], "shop/management/commands/listurls.py")
+        parsed = rank.parse("How does the shop listurls command print routes?", {"shop"})
+        self.assertNotIn("shop", parsed.words)
+
+    def test_caller_as_a_noun_is_not_a_callers_question(self):
+        from balecontext.retrieve import CALLERS_QUESTION
+        self.assertIsNone(CALLERS_QUESTION.search("a default timeout that request() uses when the caller passes none"))
+        for question in ("Who calls merge_setting?", "List the callers of merge_setting", "Show every call site of merge_setting"):
+            self.assertIsNotNone(CALLERS_QUESTION.search(question), question)

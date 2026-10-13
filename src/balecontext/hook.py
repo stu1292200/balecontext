@@ -14,7 +14,7 @@ import os
 import re
 import sys
 import time
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from . import rank
 from .retrieve import FULL_BODY, _Files, _render_body, context
@@ -381,7 +381,9 @@ def _names_code(parsed: rank.Query, response: dict) -> bool:
     # A callers question may name a plain word (`compose`) where it writes it as a name.
     if response.get("entry_identifier") and (parsed.identifiers or response.get("kind") == "callers"):
         return True
+    # The lead's file counts as part of its name: "the listurls command" names Command.handle in listurls.py.
     lead = {rank.stem(t) for t in rank.split_identifier(response["sources"][0]["name"])}
+    lead |= {rank.stem(t) for t in rank.split_identifier(PurePosixPath(response["sources"][0]["path"]).stem)}
     return len(lead & set(parsed.words)) >= (1 if parsed.identifiers else 2)
 
 

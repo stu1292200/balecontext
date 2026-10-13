@@ -68,6 +68,9 @@ def write_share(folder: Path, run: int = 2) -> Path:
         out += [f"## Tool calls: {tools.name}", "", "```", tools.read_text(encoding="utf-8").strip(), "```", ""]
     for answer in sorted(folder.glob(f"run{run}-*.answer.md"), key=_order):
         out += [f"## Answer: {answer.name}", "", answer.read_text(encoding="utf-8").strip(), ""]
+    for diff in sorted(folder.glob(f"run{run}-*.diff")):
+        text = diff.read_text(encoding="utf-8").strip()
+        out += [f"## Changes: {diff.name}", "", "```diff", text or "(no files changed)", "```", ""]
     target = folder / "share.md"
     target.write_text("\n".join(out) + "\n", encoding="utf-8")
     return target

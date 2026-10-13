@@ -19,7 +19,11 @@ Token counts come from Claude Code's own JSON result for the whole task, every
 model call included. Answers are saved side by side so a person can judge
 quality; this script never decides that an answer is correct.
 
-This uses your Claude plan limits. Nothing in the checkout is modified.
+This uses your Claude plan limits. Nothing in the checkout is modified unless
+--allow-edits is given: then Claude may edit files (Edit, Write; still no shell), the
+checkout must be a clean git checkout, each run's changes are saved as runN-<arm>.diff
+and undone before the next run. --setup-patch FILE plants a change (a bug to find)
+before every run, so both arms start from the same state; it is undone at the end.
 """
 from __future__ import annotations
 
@@ -46,6 +50,9 @@ from share_results import write_share  # noqa: E402
 
 READ_TOOLS = ["Read", "Grep", "Glob", "LS"]
 WRITE_TOOLS = ["Edit", "MultiEdit", "Write", "NotebookEdit", "Bash"]
+EDIT_TOOLS = ["Edit", "MultiEdit", "Write"]
+# BaleContext's own files in the checkout are not part of a run's changes.
+OWN_FILES = [":(exclude).balecontext", ":(exclude).balecontext/**"]
 USAGE_FIELDS = ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens")
 MODEL_USAGE_FIELDS = ("inputTokens", "cacheCreationInputTokens", "cacheReadInputTokens", "outputTokens")
 
@@ -68,9 +75,10 @@ def command(arm: str, args, mcp_config: Path, hook_config: Path | None = None) -
     claude = shutil.which("claude")
     if not claude:
         raise SystemExit("The `claude` command was not found. Install Claude Code and sign in first.")
+    editing = getattr(args, "allow_edits", False)
     line = [claude, "-p", "--output-format", "stream-json", "--verbose", "--model", args.model, "--max-turns", str(args.max_turns),
-            "--strict-mcp-config", "--disallowedTools", *WRITE_TOOLS]
-    allowed = list(READ_TOOLS)
+            "--strict-mcp-config", "--disallowedTools", *(tool for tool in WRITE_TOOLS if not (editing and tool in EDIT_TOOLS))]
+    allowed = list(READ_TOOLS) + (list(EDIT_TOOLS) if editing else [])
     if arm == "with":
         line += ["--mcp-config", str(mcp_config), "--append-system-prompt", instructions()]
         allowed.append("mcp__balecontext")
@@ -175,8 +183,56 @@ def read_turn(stdout: str, stderr: str, returncode: int, out: Path, name: str) -
     return data, calls, own
 
 
+def git(checkout: Path, *words: str) -> str:
+    completed = subprocess.run(["git", *words], cwd=checkout, capture_output=True, text=True, encoding="utf-8")
+    if completed.returncode != 0:
+        raise SystemExit(f"git {' '.join(words)} failed in {checkout}: {(completed.stderr or completed.stdout).strip()[:300]}")
+    return completed.stdout
+
+
+def refuse_dirty(checkout: Path) -> None:
+    """Edits are undone with git, so the checkout must be in a git repository with nothing of the user's uncommitted."""
+    if subprocess.run(["git", "rev-parse", "--show-toplevel"], cwd=checkout, capture_output=True).returncode != 0:
+        raise SystemExit(f"{checkout} is not in a git repository; --allow-edits and --setup-patch need one, so each run's changes can be undone.")
+    dirty = git(checkout, "status", "--porcelain", "--", ".", *OWN_FILES).strip()
+    if dirty:
+        raise SystemExit(f"{checkout} has uncommitted changes, which a run would mix with its own and the reset would discard:\n{dirty[:600]}\n"
+                         "Commit or stash them, or use a clean checkout for the test.")
+
+
+def reset_checkout(args) -> None:
+    """Back to the committed state: staged and unstaged changes undone, new files removed (BaleContext's own kept)."""
+    git(args.checkout, "reset", "-q", "--", ".", *OWN_FILES)
+    git(args.checkout, "checkout", "-q", "--", ".")
+    git(args.checkout, "clean", "-fdq", "--", ".", *OWN_FILES)
+
+
+def prepare_checkout(args) -> None:
+    """Every run starts from the same state: the commit, plus the planted patch, staged so that a
+    run's own changes are what `git diff` shows."""
+    if not (getattr(args, "allow_edits", False) or getattr(args, "setup_patch", None)):
+        return
+    reset_checkout(args)
+    if args.setup_patch:
+        # The checkout may be a folder inside the repository; the patch's paths are relative to the checkout.
+        prefix = git(args.checkout, "rev-parse", "--show-prefix").strip()
+        git(args.checkout, "apply", *([f"--directory={prefix}"] if prefix else []), str(args.setup_patch))
+        git(args.checkout, "add", "--", ".", *OWN_FILES)
+
+
+def collect_changes(args, out: Path, name: str) -> list[str]:
+    """Save what a run changed beyond the planted state as name.diff; returns the changed paths."""
+    if not getattr(args, "allow_edits", False):
+        return []
+    # Files the run created are shown as additions too.
+    git(args.checkout, "add", "-N", "--", ".", *OWN_FILES)
+    (out / f"{name}.diff").write_text(git(args.checkout, "diff", "--relative", "--", ".", *OWN_FILES), encoding="utf-8")
+    return [line.strip() for line in git(args.checkout, "diff", "--relative", "--name-only", "--", ".", *OWN_FILES).splitlines() if line.strip()]
+
+
 def run_arm(arm: str, args, question: str, mcp_config: Path, out: Path, number: int, followups: list[str] | None = None) -> dict:
     started = time.monotonic()
+    prepare_checkout(args)
     hook_log = args.checkout / ".balecontext" / "hook-log.jsonl"
     hook_lines = len(hook_log.read_text(encoding="utf-8").splitlines()) if hook_log.exists() else 0
     names = [f"run{number}-{arm}"] + [f"run{number}-{arm}.followup" + (str(position) if len(followups) > 1 else "") for position in range(1, len(followups or []) + 1)]
@@ -213,6 +269,7 @@ def run_arm(arm: str, args, question: str, mcp_config: Path, out: Path, number: 
                         "model_usage_tokens": tracked, "cumulative": cumulative, "cost_cumulative": cost_cumulative,
                         "conversation_tokens": sum(usage.values()), "conversation_cost_usd_estimate": cost})
     seconds = round(time.monotonic() - started, 1)
+    changed = collect_changes(args, out, names[0])
     hook_ran = None
     if arm == "hook":
         new_lines = hook_log.read_text(encoding="utf-8").splitlines()[hook_lines:] if hook_log.exists() else []
@@ -240,6 +297,8 @@ def run_arm(arm: str, args, question: str, mcp_config: Path, out: Path, number: 
         "tool_calls": sum(not c.startswith(("  ->", "---", "[hook]")) for c in calls),
         "error": any(result.get("is_error", False) or result.get("subtype") not in (None, "success") for result in errors),
     })
+    if getattr(args, "allow_edits", False):
+        row["changed_files"] = changed
     if followups:
         # Raw figures, so the totals can be recomputed if Claude Code reports resumed runs differently.
         row["first_question"] = first | {"usage": first_usage, "turns": first_turns}
@@ -269,6 +328,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--resume-each", action="store_true",
                         help="Start Claude Code again for each follow-up (`--resume`) instead of asking every question in one session")
     parser.add_argument("--out", type=Path, help="Results folder (default: claude-pair-results/<time> next to this script)")
+    parser.add_argument("--allow-edits", action="store_true",
+                        help="Let Claude edit files (Edit, Write; no shell). Needs a clean git checkout; each run's changes are saved as a diff and undone.")
+    parser.add_argument("--setup-patch", type=Path, help="A git patch applied before every run (a planted bug to find) and undone at the end.")
     args = parser.parse_args(argv)
     args.checkout = args.checkout.resolve()
     arms = [a.strip() for a in args.arms.split(",") if a.strip()]
@@ -282,6 +344,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.followup_file and (not followups or not all(followups)):
         raise SystemExit("A follow-up question is empty.")
     refuse_contaminated(args.checkout)
+    if args.allow_edits or args.setup_patch:
+        refuse_dirty(args.checkout)
+        if args.setup_patch:
+            args.setup_patch = args.setup_patch.resolve()
+            git(args.checkout, "apply", "--check", str(args.setup_patch))
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     out = (args.out or Path(__file__).resolve().parent / "claude-pair-results" / stamp).resolve()
     out.mkdir(parents=True, exist_ok=True)
@@ -293,17 +360,23 @@ def main(argv: list[str] | None = None) -> int:
     (out / "balecontext-hook-settings.json").write_text(json.dumps(hook_config(), indent=2), encoding="utf-8")
     (out / "question.txt").write_text(question + "\n" + "".join(f"\nFollow-up {n}:\n{text}\n" for n, text in enumerate(followups, 1)), encoding="utf-8")
     rows = []
-    for number in range(1, args.runs + 1):
-        shift = (number - 1) % len(arms)
-        for arm in arms[shift:] + arms[:shift]:
-            print(f"Run {number}: {arm}...")
-            # A number BaleContext's query parser ignores; it only stops cross-task cache reuse.
-            prompt = question if args.same_prompt else f"{question}\n\n#{random.randrange(10**5, 10**6)}"
-            later = [text if args.same_prompt else f"{text}\n\n#{random.randrange(10**5, 10**6)}" for text in followups]
-            rows.append(run_arm(arm, args, prompt, mcp_config, out, number, later))
-            row = rows[-1]
-            print(f"  {row['total_tokens']:,} tokens, {row['turns']} turns, {row['seconds']}s"
-                  + (f" (follow-ups alone: {row['followup_tokens']:,} tokens)" if followups else ""))
+    try:
+        for number in range(1, args.runs + 1):
+            shift = (number - 1) % len(arms)
+            for arm in arms[shift:] + arms[:shift]:
+                print(f"Run {number}: {arm}...")
+                # A number BaleContext's query parser ignores; it only stops cross-task cache reuse.
+                prompt = question if args.same_prompt else f"{question}\n\n#{random.randrange(10**5, 10**6)}"
+                later = [text if args.same_prompt else f"{text}\n\n#{random.randrange(10**5, 10**6)}" for text in followups]
+                rows.append(run_arm(arm, args, prompt, mcp_config, out, number, later))
+                row = rows[-1]
+                print(f"  {row['total_tokens']:,} tokens, {row['turns']} turns, {row['seconds']}s"
+                      + (f" (follow-ups alone: {row['followup_tokens']:,} tokens)" if followups else "")
+                      + (f"; changed {len(row['changed_files'])} file(s)" if "changed_files" in row else ""))
+    finally:
+        if args.allow_edits or args.setup_patch:
+            # The checkout is left as it was found, whatever happened.
+            reset_checkout(args)
     summary = {}
     for arm in arms:
         mine = [row for row in rows if row["arm"] == arm]
