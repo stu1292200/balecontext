@@ -1,0 +1,435 @@
+"""Paired Claude Code test: the same question with and without BaleContext.
+
+Usage (from any folder, with Claude Code and BaleContext installed):
+    python benchmarks/claude_pair.py PATH/TO/CHECKOUT --question-file question.txt [--runs 3] [--model sonnet]
+
+Each run calls `claude -p` once per arm in the same checkout, rotating which arm
+goes first; follow-up questions go to the same session, each once the previous
+answer is in (`--resume-each` starts `claude -p --resume` per question instead).
+All arms get the same model, the same read-only tools and no other MCP servers.
+Arms: "without" (plain Claude Code), "with" (BaleContext server and its
+instructions) and "hook" (only the prompt hook, which hands the model
+BaleContext's evidence before its first turn; system prompt and tools stay the
+same as "without", so cached-prompt pricing is comparable). Default: without,hook.
+Prompt caching makes a single run noisy: use --runs 3 or more. Each task's prompt
+ends with a different number (BaleContext ignores it), so no task reuses another's
+cached conversation: a repeated identical prompt would make the deterministic hook
+arm look cheaper than a new question really is. --same-prompt turns that off.
+Token counts come from Claude Code's own JSON result for the whole task, every
+model call included. Answers are saved side by side so a person can judge
+quality; this script never decides that an answer is correct.
+
+This uses your Claude plan limits. Nothing in the checkout is modified unless
+--allow-edits is given: then Claude may edit files (Edit, Write; still no shell), the
+checkout must be a clean git checkout, each run's changes are saved as runN-<arm>.diff
+and undone before the next run. --setup-patch FILE plants a change (a bug to find)
+before every run, so both arms start from the same state; it is undone at the end.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import queue
+import random
+import re
+import shutil
+import statistics
+import subprocess
+import sys
+import threading
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from balecontext.integrations import INSTRUCTIONS, hook_config  # noqa: E402
+from balecontext.store import Project  # noqa: E402
+from share_results import write_share  # noqa: E402
+
+READ_TOOLS = ["Read", "Grep", "Glob", "LS"]
+WRITE_TOOLS = ["Edit", "MultiEdit", "Write", "NotebookEdit", "Bash"]
+EDIT_TOOLS = ["Edit", "MultiEdit", "Write"]
+# BaleContext's own files in the checkout are not part of a run's changes.
+OWN_FILES = [":(exclude).balecontext", ":(exclude).balecontext/**"]
+USAGE_FIELDS = ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens")
+MODEL_USAGE_FIELDS = ("inputTokens", "cacheCreationInputTokens", "cacheReadInputTokens", "outputTokens")
+
+
+def instructions() -> str:
+    # One line: Windows passes `claude.cmd` arguments through cmd.exe, which breaks on newlines.
+    return " ".join(line.strip() for line in re.sub(r"<!--.*?-->", "", INSTRUCTIONS).splitlines() if line.strip())
+
+
+def refuse_contaminated(checkout: Path) -> None:
+    """A BaleContext block already in the project would leak into the 'without' arm."""
+    for name in ("CLAUDE.md", ".mcp.json", ".claude/settings.json", ".claude/settings.local.json"):
+        path = checkout / name
+        if path.is_file() and "balecontext" in path.read_text(encoding="utf-8", errors="replace").lower():
+            raise SystemExit(f"{path} mentions BaleContext, so the 'without' run would not be clean. "
+                             "Use a checkout without it (or remove it for the test) and run again.")
+
+
+def command(arm: str, args, mcp_config: Path, hook_config: Path | None = None) -> list[str]:
+    claude = shutil.which("claude")
+    if not claude:
+        raise SystemExit("The `claude` command was not found. Install Claude Code and sign in first.")
+    editing = getattr(args, "allow_edits", False)
+    line = [claude, "-p", "--output-format", "stream-json", "--verbose", "--model", args.model, "--max-turns", str(args.max_turns),
+            "--strict-mcp-config", "--disallowedTools", *(tool for tool in WRITE_TOOLS if not (editing and tool in EDIT_TOOLS))]
+    allowed = list(READ_TOOLS) + (list(EDIT_TOOLS) if editing else [])
+    if arm == "with":
+        line += ["--mcp-config", str(mcp_config), "--append-system-prompt", instructions()]
+        allowed.append("mcp__balecontext")
+    if arm == "hook":
+        # Hook only: the system prompt and tools stay identical to "without", so both arms
+        # share Claude Code's cached prefix and only the evidence itself is new input.
+        line += ["--settings", str(hook_config)]
+    return line + ["--allowedTools", *allowed]
+
+
+def invoke(arm: str, args, prompt: str, mcp_config: Path, out: Path, name: str, resume: str | None = None) -> tuple[dict, list[str], dict]:
+    """One `claude -p` call; returns its result event, its tool calls and its own model-call usage."""
+    line = command(arm, args, mcp_config, out / "balecontext-hook-settings.json")
+    if resume:
+        line[1:1] = ["--resume", resume]
+    completed = subprocess.run(line, input=prompt, capture_output=True, text=True, encoding="utf-8", cwd=args.checkout, timeout=args.timeout)
+    return read_turn(completed.stdout, completed.stderr, completed.returncode, out, name)
+
+
+def converse(arm: str, args, prompts: list[str], mcp_config: Path, out: Path, names: list[str]) -> list[tuple[dict, list[str], dict]]:
+    """Every question in one `claude -p` session, each sent once the previous answer is in, as in
+    an interactive session; returns what `invoke` returns for each question."""
+    line = command(arm, args, mcp_config, out / "balecontext-hook-settings.json")
+    line[1:1] = ["--input-format", "stream-json"]
+    errors = (out / f"{names[0]}.stderr.txt").open("w", encoding="utf-8")
+    process = subprocess.Popen(line, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=errors, text=True, encoding="utf-8", cwd=args.checkout)
+    lines: queue.Queue = queue.Queue()
+
+    def pump() -> None:
+        for text in process.stdout:
+            lines.put(text)
+        lines.put(None)
+
+    threading.Thread(target=pump, daemon=True).start()
+    turns = []
+    try:
+        for prompt, name in zip(prompts, names):
+            process.stdin.write(json.dumps({"type": "user", "message": {"role": "user", "content": prompt}}) + "\n")
+            process.stdin.flush()
+            raw: list[str] = []
+            deadline = time.monotonic() + args.timeout
+            while True:
+                try:
+                    text = lines.get(timeout=max(1.0, deadline - time.monotonic()))
+                except queue.Empty:
+                    raise SystemExit(f"{name} took longer than {args.timeout}s; see {out}.")
+                if text is None:
+                    break
+                raw.append(text)
+                try:
+                    if json.loads(text).get("type") == "result":
+                        break
+                except (json.JSONDecodeError, AttributeError):
+                    continue
+            errors.flush()
+            stderr = (out / f"{names[0]}.stderr.txt").read_text(encoding="utf-8")
+            turns.append(read_turn("".join(raw), stderr, process.poll() or 0, out, name))
+    finally:
+        try:
+            process.stdin.close()
+            process.wait(timeout=60)
+        except (OSError, subprocess.TimeoutExpired):
+            process.kill()
+        errors.close()
+        if not (out / f"{names[0]}.stderr.txt").read_text(encoding="utf-8").strip():
+            (out / f"{names[0]}.stderr.txt").unlink()
+    return turns
+
+
+def read_turn(stdout: str, stderr: str, returncode: int, out: Path, name: str) -> tuple[dict, list[str], dict]:
+    raw = stdout.strip()
+    (out / f"{name}.jsonl").write_text(raw + "\n", encoding="utf-8")
+    events = []
+    for text in raw.splitlines():
+        try:
+            events.append(json.loads(text))
+        except json.JSONDecodeError:
+            continue
+    data = next((event for event in reversed(events) if event.get("type") == "result"), {})
+    # Every tool call in order, so a run explains its own turns.
+    calls = []
+    messages: dict[str, dict] = {}
+    for event in events:
+        if event.get("type") == "assistant":
+            message = event.get("message") or {}
+            if message.get("id") and isinstance(message.get("usage"), dict):
+                messages[message["id"]] = message["usage"]
+            for block in message.get("content") or []:
+                if isinstance(block, dict) and block.get("type") == "tool_use":
+                    calls.append(f"{block.get('name')} {json.dumps(block.get('input'), ensure_ascii=False)[:300]}")
+        elif event.get("type") == "user":
+            for block in (event.get("message") or {}).get("content") or []:
+                if isinstance(block, dict) and block.get("type") == "tool_result":
+                    content = block.get("content")
+                    text = content if isinstance(content, str) else json.dumps(content, ensure_ascii=False)
+                    calls.append(f"  -> result {len(text):,} chars" + (" (COVERAGE: " + text.split("COVERAGE: ", 1)[1][:8].split(".")[0] + ")" if "COVERAGE: " in text else ""))
+    if not data or returncode != 0 and not data.get("usage"):
+        (out / f"{name}.stderr.txt").write_text(stderr, encoding="utf-8")
+        raise SystemExit(f"{name} failed; see {out}. First error line: {(stderr or raw).strip()[:300]}")
+    own = {field: sum(int(usage.get(field) or 0) for usage in messages.values()) for field in USAGE_FIELDS}
+    (out / f"{name}.answer.md").write_text(str(data.get("result", "")), encoding="utf-8")
+    return data, calls, own
+
+
+def git(checkout: Path, *words: str) -> str:
+    completed = subprocess.run(["git", *words], cwd=checkout, capture_output=True, text=True, encoding="utf-8")
+    if completed.returncode != 0:
+        raise SystemExit(f"git {' '.join(words)} failed in {checkout}: {(completed.stderr or completed.stdout).strip()[:300]}")
+    return completed.stdout
+
+
+def refuse_dirty(checkout: Path) -> None:
+    """Edits are undone with git, so the checkout must be in a git repository with nothing of the user's uncommitted."""
+    if subprocess.run(["git", "rev-parse", "--show-toplevel"], cwd=checkout, capture_output=True).returncode != 0:
+        raise SystemExit(f"{checkout} is not in a git repository; --allow-edits and --setup-patch need one, so each run's changes can be undone.")
+    dirty = git(checkout, "status", "--porcelain", "--", ".", *OWN_FILES).strip()
+    if dirty:
+        raise SystemExit(f"{checkout} has uncommitted changes, which a run would mix with its own and the reset would discard:\n{dirty[:600]}\n"
+                         "Commit or stash them, or use a clean checkout for the test.")
+
+
+def reset_checkout(args) -> None:
+    """Back to the committed state: staged and unstaged changes undone, new files removed (BaleContext's own kept)."""
+    git(args.checkout, "reset", "-q", "--", ".", *OWN_FILES)
+    git(args.checkout, "checkout", "-q", "--", ".")
+    git(args.checkout, "clean", "-fdq", "--", ".", *OWN_FILES)
+
+
+def prepare_checkout(args) -> None:
+    """Every run starts from the same state: the commit, plus the planted patch, staged so that a
+    run's own changes are what `git diff` shows."""
+    if not (getattr(args, "allow_edits", False) or getattr(args, "setup_patch", None)):
+        return
+    reset_checkout(args)
+    if args.setup_patch:
+        # The checkout may be a folder inside the repository; the patch's paths are relative to the checkout.
+        prefix = git(args.checkout, "rev-parse", "--show-prefix").strip()
+        git(args.checkout, "apply", *([f"--directory={prefix}"] if prefix else []), str(args.setup_patch))
+        git(args.checkout, "add", "--", ".", *OWN_FILES)
+
+
+def collect_changes(args, out: Path, name: str) -> list[str]:
+    """Save what a run changed beyond the planted state as name.diff; returns the changed paths."""
+    if not getattr(args, "allow_edits", False):
+        return []
+    # Files the run created are shown as additions too.
+    git(args.checkout, "add", "-N", "--", ".", *OWN_FILES)
+    (out / f"{name}.diff").write_text(git(args.checkout, "diff", "--relative", "--", ".", *OWN_FILES), encoding="utf-8")
+    return [line.strip() for line in git(args.checkout, "diff", "--relative", "--name-only", "--", ".", *OWN_FILES).splitlines() if line.strip()]
+
+
+def run_arm(arm: str, args, question: str, mcp_config: Path, out: Path, number: int, followups: list[str] | None = None) -> dict:
+    started = time.monotonic()
+    prepare_checkout(args)
+    hook_log = args.checkout / ".balecontext" / "hook-log.jsonl"
+    hook_lines = len(hook_log.read_text(encoding="utf-8").splitlines()) if hook_log.exists() else 0
+    names = [f"run{number}-{arm}"] + [f"run{number}-{arm}.followup" + (str(position) if len(followups) > 1 else "") for position in range(1, len(followups or []) + 1)]
+    # A conversation runs in one session unless --resume-each starts Claude Code again per question.
+    answered = iter(converse(arm, args, [question] + list(followups or []), mcp_config, out, names)) if followups and not args.resume_each else None
+    data, calls, _ = next(answered) if answered else invoke(arm, args, question, mcp_config, out, names[0])
+    usage = {field: int((data.get("usage") or {}).get(field) or 0) for field in USAGE_FIELDS}
+    cost, turns = data.get("total_cost_usd"), data.get("num_turns")
+    first = {"tokens": sum(usage.values()), "cost": cost}
+    first_usage, first_turns = dict(usage), turns
+    errors = [data]
+    session, reports = data.get("session_id"), []
+    for position, followup in enumerate(followups or [], 1):
+        # Later questions in the same conversation; with --resume-each, a new `claude -p --resume` each.
+        later, later_calls, own = next(answered) if answered else invoke(arm, args, followup, mcp_config, out, names[position], resume=session)
+        session = later.get("session_id") or session
+        errors.append(later)
+        calls += [f"--- follow-up question {position} ---"] + later_calls
+        reported = {field: int((later.get("usage") or {}).get(field) or 0) for field in USAGE_FIELDS}
+        # A later question, in the same session or resumed, has reported its own calls' usage but
+        # the whole conversation's cost (Claude Code keeps or restores its cost tracker, and
+        # `modelUsage` with it). Check each against the question's own model calls rather than
+        # assume; with nothing to check, usage is taken as its own and cost as cumulative.
+        before_total, own_total = sum(usage.values()), sum(own.values())
+        cumulative = bool(own_total) and abs(sum(reported.values()) - before_total - own_total) < abs(sum(reported.values()) - own_total)
+        tracked = sum(int(model.get(field) or 0) for model in (later.get("modelUsage") or {}).values() if isinstance(model, dict) for field in MODEL_USAGE_FIELDS)
+        cost_cumulative = abs(tracked - before_total - own_total) < abs(tracked - own_total) if tracked and own_total else True
+        usage = reported if cumulative else {field: usage[field] + reported[field] for field in USAGE_FIELDS}
+        later_cost = later.get("total_cost_usd")
+        if isinstance(cost, (int, float)) and isinstance(later_cost, (int, float)):
+            cost = later_cost if cost_cumulative else cost + later_cost
+        turns = later.get("num_turns") if cumulative else (turns or 0) + (later.get("num_turns") or 0)
+        reports.append({"usage": reported, "cost_usd_estimate": later_cost, "turns": later.get("num_turns"), "own_calls": own,
+                        "model_usage_tokens": tracked, "cumulative": cumulative, "cost_cumulative": cost_cumulative,
+                        "conversation_tokens": sum(usage.values()), "conversation_cost_usd_estimate": cost})
+    seconds = round(time.monotonic() - started, 1)
+    changed = collect_changes(args, out, names[0])
+    hook_ran = None
+    if arm == "hook":
+        new_lines = hook_log.read_text(encoding="utf-8").splitlines()[hook_lines:] if hook_log.exists() else []
+        hook_ran = bool(new_lines)
+        if not hook_ran:
+            print("  WARNING: the prompt hook did not run in this Claude Code version; this arm equals 'without'.")
+        elif not any(json.loads(line).get("context_chars") for line in new_lines):
+            print("  Note: the hook ran but found nothing to add for this question.")
+        # What the hook added for each question, at the top of that question's tool calls.
+        added = [json.loads(line) for line in new_lines]
+        starts = [0] + [index + 1 for index, call in enumerate(calls) if call.startswith("--- follow-up question")]
+        for start, line in reversed(list(zip(starts, added))):
+            parts = line.get("part_chars") or []
+            calls.insert(start, "[hook] " + (f"pack {line['context_chars']:,} chars" + (" + parts " + ", ".join(f"{n:,}" for n in parts) if parts else "")
+                                             if line.get("context_chars") else "nothing added"))
+    (out / f"run{number}-{arm}.tools.txt").write_text("\n".join(calls) + "\n", encoding="utf-8")
+    row = dict(usage)
+    row.update({
+        "arm": arm, "run": number,
+        "total_tokens": sum(usage[field] for field in USAGE_FIELDS),
+        "cost_usd_estimate": cost,
+        "turns": turns,
+        "seconds": seconds,
+        "hook_ran": hook_ran,
+        "tool_calls": sum(not c.startswith(("  ->", "---", "[hook]")) for c in calls),
+        "error": any(result.get("is_error", False) or result.get("subtype") not in (None, "success") for result in errors),
+    })
+    if getattr(args, "allow_edits", False):
+        row["changed_files"] = changed
+    if followups:
+        # Raw figures, so the totals can be recomputed if Claude Code reports resumed runs differently.
+        row["first_question"] = first | {"usage": first_usage, "turns": first_turns}
+        row["followups_reported"] = reports
+        row["followup_tokens"] = row["total_tokens"] - first["tokens"]
+        row["followup_cost_usd_estimate"] = cost - first["cost"] if isinstance(cost, (int, float)) and isinstance(first["cost"], (int, float)) else None
+        # Each question's own share, to see how the difference grows over a conversation.
+        totals = [(first["tokens"], first["cost"])] + [(r["conversation_tokens"], r["conversation_cost_usd_estimate"]) for r in reports]
+        row["tokens_by_question"] = [now[0] - before[0] for before, now in zip([(0, 0.0)] + totals, totals)]
+        row["cost_by_question"] = [round(now[1] - before[1], 6) if all(isinstance(v, (int, float)) for v in (now[1], before[1])) else None
+                                   for before, now in zip([(0, 0.0)] + totals, totals)]
+    return row
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("checkout", type=Path)
+    parser.add_argument("--question-file", type=Path, required=True)
+    parser.add_argument("--runs", type=int, default=3, help="Pairs to run (default 3)")
+    parser.add_argument("--model", default="sonnet", help="Same model for both arms (default sonnet)")
+    parser.add_argument("--max-turns", type=int, default=40)
+    parser.add_argument("--timeout", type=int, default=1200, help="Seconds per run")
+    parser.add_argument("--arms", default="without,hook", help="Comma-separated arms: without, with, hook (default without,hook)")
+    parser.add_argument("--same-prompt", action="store_true", help="Send the identical prompt every time (lets later runs reuse earlier runs' cache)")
+    parser.add_argument("--followup-file", type=Path, action="append",
+                        help="Later questions asked in the same conversation, one per file or several separated by a line of ---; totals then cover every question")
+    parser.add_argument("--resume-each", action="store_true",
+                        help="Start Claude Code again for each follow-up (`--resume`) instead of asking every question in one session")
+    parser.add_argument("--out", type=Path, help="Results folder (default: claude-pair-results/<time> next to this script)")
+    parser.add_argument("--allow-edits", action="store_true",
+                        help="Let Claude edit files (Edit, Write; no shell). Needs a clean git checkout; each run's changes are saved as a diff and undone.")
+    parser.add_argument("--setup-patch", type=Path, help="A git patch applied before every run (a planted bug to find) and undone at the end.")
+    args = parser.parse_args(argv)
+    args.checkout = args.checkout.resolve()
+    arms = [a.strip() for a in args.arms.split(",") if a.strip()]
+    if len(arms) < 2 or len(set(arms)) != len(arms) or set(arms) - {"without", "with", "hook"} or "without" not in arms:
+        raise SystemExit("--arms needs 'without' and at least one of 'with' or 'hook', each once.")
+    question = args.question_file.read_text(encoding="utf-8").strip()
+    if not question:
+        raise SystemExit("The question file is empty.")
+    # Each follow-up file holds one question, or several separated by a line of three dashes.
+    followups = [part.strip() for path in args.followup_file or [] for part in re.split(r"(?m)^---\s*$", path.read_text(encoding="utf-8"))]
+    if args.followup_file and (not followups or not all(followups)):
+        raise SystemExit("A follow-up question is empty.")
+    refuse_contaminated(args.checkout)
+    if args.allow_edits or args.setup_patch:
+        refuse_dirty(args.checkout)
+        if args.setup_patch:
+            args.setup_patch = args.setup_patch.resolve()
+            git(args.checkout, "apply", "--check", str(args.setup_patch))
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    out = (args.out or Path(__file__).resolve().parent / "claude-pair-results" / stamp).resolve()
+    out.mkdir(parents=True, exist_ok=True)
+    print("Indexing the checkout once before the runs (no model calls)...")
+    Project(args.checkout).index()
+    mcp_config = out / "balecontext-mcp.json"
+    mcp_config.write_text(json.dumps({"mcpServers": {"balecontext": {
+        "command": sys.executable, "args": ["-m", "balecontext", "mcp", "--root", str(args.checkout)]}}}, indent=2), encoding="utf-8")
+    (out / "balecontext-hook-settings.json").write_text(json.dumps(hook_config(), indent=2), encoding="utf-8")
+    (out / "question.txt").write_text(question + "\n" + "".join(f"\nFollow-up {n}:\n{text}\n" for n, text in enumerate(followups, 1)), encoding="utf-8")
+    rows = []
+    try:
+        for number in range(1, args.runs + 1):
+            shift = (number - 1) % len(arms)
+            for arm in arms[shift:] + arms[:shift]:
+                print(f"Run {number}: {arm}...")
+                # A number BaleContext's query parser ignores; it only stops cross-task cache reuse.
+                prompt = question if args.same_prompt else f"{question}\n\n#{random.randrange(10**5, 10**6)}"
+                later = [text if args.same_prompt else f"{text}\n\n#{random.randrange(10**5, 10**6)}" for text in followups]
+                rows.append(run_arm(arm, args, prompt, mcp_config, out, number, later))
+                row = rows[-1]
+                print(f"  {row['total_tokens']:,} tokens, {row['turns']} turns, {row['seconds']}s"
+                      + (f" (follow-ups alone: {row['followup_tokens']:,} tokens)" if followups else "")
+                      + (f"; changed {len(row['changed_files'])} file(s)" if "changed_files" in row else ""))
+    finally:
+        if args.allow_edits or args.setup_patch:
+            # The checkout is left as it was found, whatever happened.
+            reset_checkout(args)
+    summary = {}
+    for arm in arms:
+        mine = [row for row in rows if row["arm"] == arm]
+        costs = [row["cost_usd_estimate"] for row in mine if isinstance(row["cost_usd_estimate"], (int, float))]
+        summary[arm] = {
+            "median_total_tokens": statistics.median(row["total_tokens"] for row in mine),
+            "median_cost_usd_estimate": statistics.median(costs) if costs else None,
+            "median_turns": statistics.median(row["turns"] for row in mine) if all(isinstance(row["turns"], int) for row in mine) else None,
+            "errors": sum(bool(row["error"]) for row in mine),
+        }
+        if followups:
+            later = [row["followup_cost_usd_estimate"] for row in mine if isinstance(row.get("followup_cost_usd_estimate"), (int, float))]
+            summary[arm]["median_followup_tokens"] = statistics.median(row["followup_tokens"] for row in mine)
+            summary[arm]["median_followup_cost_usd_estimate"] = statistics.median(later) if later else None
+    base = summary["without"]
+    for arm in arms:
+        if arm == "without":
+            continue
+        assisted = summary[arm]
+        assisted["token_saving_percent"] = round(100 * (1 - assisted["median_total_tokens"] / base["median_total_tokens"]), 1) if base["median_total_tokens"] else None
+        if base["median_cost_usd_estimate"] and assisted["median_cost_usd_estimate"] is not None:
+            assisted["cost_saving_percent"] = round(100 * (1 - assisted["median_cost_usd_estimate"] / base["median_cost_usd_estimate"]), 1)
+        if followups and base.get("median_followup_tokens"):
+            assisted["followup_token_saving_percent"] = round(100 * (1 - assisted["median_followup_tokens"] / base["median_followup_tokens"]), 1)
+            if base.get("median_followup_cost_usd_estimate") and assisted.get("median_followup_cost_usd_estimate") is not None:
+                assisted["followup_cost_saving_percent"] = round(100 * (1 - assisted["median_followup_cost_usd_estimate"] / base["median_followup_cost_usd_estimate"]), 1)
+    if followups:
+        print(f"\n{'question':>8}" + "".join(f" {arm + ' tokens':>15} {arm + ' $':>10}" for arm in arms))
+        for index in range(1 + len(followups)):
+            line = f"{index + 1:>8}"
+            for arm in arms:
+                mine = [row for row in rows if row["arm"] == arm]
+                tokens = statistics.median(row["tokens_by_question"][index] for row in mine)
+                costs = [row["cost_by_question"][index] for row in mine if row["cost_by_question"][index] is not None]
+                summary[arm].setdefault("median_tokens_by_question", []).append(tokens)
+                summary[arm].setdefault("median_cost_by_question", []).append(statistics.median(costs) if costs else None)
+                line += f" {tokens:>15,.0f} {statistics.median(costs) if costs else float('nan'):>10.3f}"
+            print(line)
+    summary["note"] = ("Whole-task totals from Claude Code's JSON result" + (f", all {1 + len(followups)} questions of one conversation together; 'followup' figures are the later questions alone" if followups else "") + ". Cost is Claude Code's own estimate, the closest "
+                       "proxy for plan limits. Judge answer quality by reading the saved answers; savings mean nothing "
+                       "if the BaleContext answers are worse.")
+    (out / "summary.json").write_text(json.dumps({"summary": summary, "rows": rows}, indent=2), encoding="utf-8")
+    print(f"\n{'run':>3} {'arm':8} {'total':>10} {'input':>8} {'cache_wr':>9} {'cache_rd':>10} {'output':>7} {'turns':>5} {'tools':>5} {'cost$':>7}")
+    for row in rows:
+        cost = f"{row['cost_usd_estimate']:.3f}" if isinstance(row["cost_usd_estimate"], (int, float)) else "-"
+        print(f"{row['run']:>3} {row['arm']:8} {row['total_tokens']:>10,} {row['input_tokens']:>8,} {row['cache_creation_input_tokens']:>9,} "
+              f"{row['cache_read_input_tokens']:>10,} {row['output_tokens']:>7,} {row['turns'] if row['turns'] is not None else '-':>5} {row['tool_calls']:>5} {cost:>7}")
+    print(json.dumps(summary, indent=2))
+    print(f"\nAnswers and raw results: {out}")
+    # The one file to attach when sharing this test.
+    print(f"To share: {write_share(out, min(2, args.runs))}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

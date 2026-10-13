@@ -1,0 +1,175 @@
+{
+  "repository": "https://github.com/expressjs/express.git",
+  "commit": "a419aa7",
+  "note": "Held out: written from the source before any JavaScript-specific ranking or extraction change. Prototype-style members are named object.member (prototype dropped); exports.X is named X.",
+  "questions": [
+    {
+      "id": "res-send",
+      "query": "How does res.send set the Content-Type and ETag before sending the body?",
+      "entry": {
+        "name": "res.send",
+        "path": "lib/response.js"
+      },
+      "gold": [
+        {
+          "name": "res.send",
+          "path": "lib/response.js"
+        },
+        {
+          "name": "res.header",
+          "path": "lib/response.js"
+        },
+        {
+          "name": "setCharset",
+          "path": "lib/utils.js"
+        }
+      ]
+    },
+    {
+      "id": "res-json",
+      "query": "What does res.json do with the object, and which app settings change how it is serialized?",
+      "entry": {
+        "name": "res.json",
+        "path": "lib/response.js"
+      },
+      "gold": [
+        {
+          "name": "res.json",
+          "path": "lib/response.js"
+        },
+        {
+          "name": "stringify",
+          "path": "lib/response.js"
+        },
+        {
+          "name": "res.send",
+          "path": "lib/response.js"
+        }
+      ]
+    },
+    {
+      "id": "res-redirect",
+      "query": "How does res.redirect pick the status code and build the response body?",
+      "entry": {
+        "name": "res.redirect",
+        "path": "lib/response.js"
+      },
+      "gold": [
+        {
+          "name": "res.redirect",
+          "path": "lib/response.js"
+        },
+        {
+          "name": "res.location",
+          "path": "lib/response.js"
+        },
+        {
+          "name": "res.format",
+          "path": "lib/response.js"
+        }
+      ]
+    },
+    {
+      "id": "render-flow",
+      "query": "Trace how res.render finds and renders a view template.",
+      "entry": {
+        "name": "res.render",
+        "path": "lib/response.js"
+      },
+      "gold": [
+        {
+          "name": "res.render",
+          "path": "lib/response.js"
+        },
+        {
+          "name": "app.render",
+          "path": "lib/application.js"
+        },
+        {
+          "name": "tryRender",
+          "path": "lib/application.js"
+        },
+        {
+          "name": "View",
+          "path": "lib/view.js"
+        },
+        {
+          "name": "View.lookup",
+          "path": "lib/view.js"
+        },
+        {
+          "name": "View.render",
+          "path": "lib/view.js"
+        }
+      ]
+    },
+    {
+      "id": "app-handle",
+      "query": "How does an Express app handle an incoming request and pass it to the router?",
+      "entry": {
+        "name": "app.handle",
+        "path": "lib/application.js"
+      },
+      "gold": [
+        {
+          "name": "app.handle",
+          "path": "lib/application.js"
+        }
+      ]
+    },
+    {
+      "id": "req-range",
+      "query": "How does req.range parse the Range header?",
+      "entry": {
+        "name": "req.range",
+        "path": "lib/request.js"
+      },
+      "gold": [
+        {
+          "name": "req.range",
+          "path": "lib/request.js"
+        }
+      ]
+    },
+    {
+      "id": "create-app",
+      "query": "What happens in createApplication when express() is called?",
+      "entry": {
+        "name": "createApplication",
+        "path": "lib/express.js"
+      },
+      "gold": [
+        {
+          "name": "createApplication",
+          "path": "lib/express.js"
+        },
+        {
+          "name": "app.init",
+          "path": "lib/application.js"
+        },
+        {
+          "name": "app.defaultConfiguration",
+          "path": "lib/application.js"
+        }
+      ]
+    },
+    {
+      "id": "send-file",
+      "query": "How does res.sendFile stream a file and report errors?",
+      "entry": {
+        "name": "res.sendFile",
+        "path": "lib/response.js"
+      },
+      "gold": [
+        {
+          "name": "res.sendFile",
+          "path": "lib/response.js"
+        },
+        {
+          "name": "sendfile",
+          "path": "lib/response.js"
+        }
+      ]
+    }
+  ]
+}

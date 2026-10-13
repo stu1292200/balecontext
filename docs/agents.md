@@ -20,14 +20,25 @@ versions 2024-11-05, 2025-03-26, 2025-06-18 and 2025-11-25 for a tools-only stdi
 subset. It does not provide HTTP transport, remote access, resources, sampling,
 prompts, authentication, or agent orchestration.
 
+The unreleased source starts background polling with an initialized MCP
+connection. No separate `watch` command is needed while that connection is open.
+Client installers continue to use the same server command. Every tool request
+also checks current source before reading. Release v0.1.0 has per-request refresh
+and a manual watcher, without automatic connection-scoped polling.
+
+For Claude Code, [claude-code-test.md](claude-code-test.md) covers setup and a
+paired with/without token test.
+
 To verify a client:
 
 1. Install the package and run `balecontext doctor`.
 2. Run the project installer or copy `config generic` into that client's supported settings.
 3. Restart the client and complete its project trust/server approval flow.
-4. Confirm it lists all four BaleContext tools.
+4. Confirm it lists all five BaleContext tools.
 5. Ask for a known symbol; verify the cited path and lines.
-6. Modify the source, query again, and verify the updated excerpt.
+6. Modify, rename and delete source files while connected. For the unreleased
+   source, verify SQLite updates without another query. Then query and verify
+   the updated excerpt and removal of stale symbols.
 7. Ask a question with no matching index evidence; confirm the agent expands its search.
 8. Record the client version, OS and date before marking the integration verified.
 

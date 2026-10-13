@@ -1,0 +1,455 @@
+"""Symbol-first ranking: identifiers and class qualifiers outweigh body-text frequency."""
+from __future__ import annotations
+
+from collections.abc import Iterable
+
+import math
+import os
+import re
+from dataclasses import dataclass, field
+from functools import lru_cache
+from pathlib import PurePosixPath
+
+# Question fillers and instructions that agents put in queries ("cite the
+# relevant source files and line numbers") but that describe no code.
+STOP = {
+    "a", "an", "and", "are", "as", "at", "be", "by", "do", "does", "did", "done", "for", "from", "how", "i", "in", "is",
+    "it", "its", "of", "on", "or", "the", "this", "that", "these", "those", "to", "what", "when", "where", "which",
+    "who", "why", "with", "without", "into", "can", "could", "should", "would", "will", "not", "any", "all", "some",
+    "there", "here", "about", "then", "than", "so", "if", "out", "up", "me", "my", "we", "our", "you", "your",
+    "work", "works", "working", "happen", "happens", "happening", "explain", "describe", "trace", "show", "tell",
+    "cite", "citing", "relevant", "source", "sources", "file", "files", "line", "lines", "number", "numbers",
+    "modify", "please", "code", "codebase", "repository", "repo", "project", "detail", "details", "step", "steps",
+    "also", "called", "get", "gets", "used", "using", "via", "way", "ways", "need", "needs", "decide", "decides",
+}
+TEST_WORDS = {"test", "tests", "testing", "spec", "specs"}
+# "the next request", "the same session": after a determiner these only describe the noun.
+GENERIC_ADJECTIVES = {"next", "previous", "first", "last", "new", "old", "same", "other", "current", "following", "original", "final"}
+DETERMINERS = {"the", "a", "an", "this", "that", "each", "every", "its", "their", "our", "your", "my"}
+AUXILIARIES = {"does", "do", "did", "is", "are", "was", "were", "can", "could", "will", "would", "should"}
+DOC_WORDS = {"doc", "docs", "documentation", "guide", "readme"}
+# Words a question uses where code says something else ("choose the proxy" -> select_proxy).
+SYNONYMS = {"choose": ("select",), "chooses": ("select",), "chosen": ("select",), "pick": ("select",), "picks": ("select",)}
+CODE_EXTENSIONS = (".py", ".pyi", ".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx")
+DOC_EXTENSIONS = (".md", ".rst", ".txt", ".adoc", ".mdx")
+TOKEN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*(?:\(\))?")
+
+
+@lru_cache(maxsize=1 << 16)
+def stem(word: str) -> str:
+    """Tiny suffix stripper applied to both query and index tokens."""
+    word = word.lower()
+    if len(word) > 6 and word.endswith("ations"):
+        return word[:-6]
+    if len(word) > 5 and word.endswith("ation"):
+        return word[:-5]
+    if len(word) > 5 and word.endswith("ing"):
+        return word[:-3]
+    if len(word) > 4 and word.endswith("ed") and not word.endswith("eed"):
+        return word[:-2]
+    if len(word) > 4 and word.endswith("ies"):
+        return word[:-3] + "y"
+    if len(word) > 3 and word.endswith("es") and word[:-2].endswith(("s", "x", "z", "ch", "sh")):
+        return word[:-2]
+    if len(word) > 3 and word.endswith("s") and not word.endswith(("ss", "us", "is")):
+        return word[:-1]
+    return word
+
+
+def same_family(a: str, b: str) -> bool:
+    """Stems of one word family: "resolution" and "resolve", "execution" and "execute" share a
+    stem of five or more letters covering most of the shorter word ("construct" and "constraint" do not)."""
+    if a == b:
+        return True
+    shared = len(os.path.commonprefix([a, b]))
+    return shared >= 5 and shared >= 0.7 * min(len(a), len(b))
+
+
+IDENTIFIER_PART = re.compile(r"[A-Z]+(?=[A-Z][a-z])|[A-Z]?[a-z]+|[A-Z]+|[0-9]+")
+
+
+def split_identifier(text: str) -> list[str]:
+    """`URLResolver._clean_fields` -> url, resolver, clean, fields (lowercase, unstemmed)."""
+    return [part.lower() for part in IDENTIFIER_PART.findall(text)]
+
+
+def path_class(path: str) -> str:
+    pure = PurePosixPath(path.lower())
+    parts = set(pure.parts[:-1])
+    name = pure.name
+    # A docs chapter about testing (`docs/topics/testing/tools.txt`) is documentation; a test
+    # directory's own docs are tests' material. The outer directory decides.
+    doc_at = next((i for i, part in enumerate(pure.parts[:-1]) if part in {"docs", "doc"}), None)
+    test_at = next((i for i, part in enumerate(pure.parts[:-1]) if part in {"tests", "test", "testing", "__tests__", "spec", "specs"}), None)
+    if (test_at is not None and (doc_at is None or test_at < doc_at)) or name.startswith("test_") or re.search(r"(_test|_tests|\.test|\.spec)\.[a-z]+$", name):
+        return "test"
+    if parts & {"examples", "example", "samples", "sample"}:
+        return "example"
+    if name.endswith(DOC_EXTENSIONS) or parts & {"docs", "doc"}:
+        return "doc"
+    if name.endswith(CODE_EXTENSIONS):
+        return "code"
+    return "other"
+
+
+@dataclass
+class Identifier:
+    text: str
+    leaf: str
+    qualifiers: list[str]
+    is_class: bool
+    called: bool = False
+
+
+@dataclass
+class Query:
+    identifiers: list[Identifier] = field(default_factory=list)
+    words: list[str] = field(default_factory=list)
+    wants_tests: bool = False
+    wants_docs: bool = False
+    wants_types: bool = False
+    prose_words: set[str] = field(default_factory=set)
+    # "a field's errors", "the errors of a field": (owner, thing), both stemmed.
+    possessives: set[tuple[str, str]] = field(default_factory=set)
+
+    def describe(self) -> str:
+        names = ", ".join(i.text for i in self.identifiers) or "none"
+        return f"identifiers: {names}; words: {', '.join(self.words) or 'none'}"
+
+
+def _is_identifier(token: str, called: bool) -> bool:
+    if called or "." in token or "_" in token.strip("_") or token.startswith("_"):
+        return True
+    if re.search(r"[a-z][A-Z]", token):
+        return True
+    # URLResolver-style acronym prefixes, but not plain acronyms such as POST or HTTP.
+    return bool(re.match(r"[A-Z]{2,}[a-z]", token))
+
+
+def parse(query: str, project_name: str | Iterable[str] = "") -> Query:
+    """Read a question as identifiers and stemmed words.
+
+    `project_name` is the project's own name, or several of them: its package (`django`), its
+    folder and the name it declares (`express` in package.json). A question uses them as the
+    project's name ("Django's URL resolver", "an Express app"), so as plain words they name no
+    definition and no file.
+    """
+    names = {project_name.lower()} if isinstance(project_name, str) else {name.lower() for name in project_name}
+    names.discard("")
+    result = Query()
+    seen_words: set[str] = set()
+    seen_identifiers: set[str] = set()
+    lowered = {w.lower() for w in re.findall(r"[A-Za-z]+", query)}
+    result.wants_tests = bool(lowered & TEST_WORDS)
+    result.wants_docs = bool(lowered & DOC_WORDS)
+    result.wants_types = bool(lowered & {"type", "types", "interface", "interfaces", "typing"})
+    result.possessives = {(stem(owner), stem(thing)) for owner, thing in re.findall(r"\b([A-Za-z]+)['\u2019]s\s+([A-Za-z]+)", query)}
+    result.possessives |= {(stem(owner), stem(thing)) for thing, owner in re.findall(r"\b([A-Za-z]+)\s+of\s+(?:a|an|the|each|every)\s+([A-Za-z]+)", query)}
+    name_stems = {stem(name) for name in names}
+    result.possessives = {(owner, thing) for owner, thing in result.possessives if owner not in name_stems}
+    tokens = [match.group(0) for match in TOKEN.finditer(query)]
+    for position, token in enumerate(tokens):
+        previous = tokens[position - 1].lower() if position else ""
+        following = tokens[position + 1].lower() if position + 1 < len(tokens) else ""
+        called = token.endswith("()")
+        token = token.removesuffix("()").strip(".")
+        if not token or not called and token.lower() in names:
+            continue
+        if token.lower().endswith(CODE_EXTENSIONS + DOC_EXTENSIONS) and "." in token:
+            # A file name: keep its stem as a path word.
+            words = [token.rsplit(".", 1)[0]]
+        elif _is_identifier(token, called):
+            if token not in seen_identifiers:
+                seen_identifiers.add(token)
+                segments = token.split(".")
+                leaf = segments[-1]
+                result.identifiers.append(Identifier(token, leaf, [s for s in segments[:-1] if s], leaf[:1].isupper() and not leaf.isupper(), called))
+            words = split_identifier(token)
+        else:
+            words = split_identifier(token)
+            if previous in DETERMINERS and token.lower() in GENERIC_ADJECTIVES:
+                continue
+            # A plain word is taken as a function's name where a question puts one: right after
+            # "does" or "is" ("How does compose run middleware?") or before "function". Elsewhere
+            # it describes ("the template engine", "the block tags").
+            named = previous in AUXILIARIES or following in {"function", "method", "helper"}
+            if len(words) == 1 and len(words[0]) > 2 and words[0] not in STOP and named:
+                result.prose_words.add(stem(words[0]))
+        for word in words:
+            if len(word) <= 2 or word in STOP:
+                continue
+            for stemmed in (stem(word), *SYNONYMS.get(word, ())):
+                if stemmed not in seen_words:
+                    seen_words.add(stemmed)
+                    result.words.append(stemmed)
+    return result
+
+
+@dataclass
+class Entry:
+    id: str
+    path: str
+    name: str
+    kind: str
+    start: int
+    end: int
+    leaf: str
+    owner: list[str]
+    name_tokens: set[str]
+    leaf_tokens: set[str]
+    path_tokens: set[str]
+    file_stem: str
+    category: str
+
+
+def package_name(paths: list[str]) -> str:
+    """The project's own package directory (`django`, `src/requests` -> `requests`): the deepest
+    directory holding at least 80% of the code files, or "" when none does."""
+    prefix: tuple[str, ...] = ()
+    while paths:
+        below = [PurePosixPath(path).parts for path in paths]
+        below = [parts[len(prefix)] for parts in below if len(parts) > len(prefix) + 1 and parts[:len(prefix)] == prefix]
+        top = max(set(below), key=below.count, default=None)
+        if top is None or below.count(top) < 0.8 * len(paths):
+            break
+        prefix += (top,)
+    return prefix[-1].lower() if prefix else ""
+
+
+class SymbolTable:
+    """In-memory symbol index; rebuilt only when the index generation changes."""
+
+    def __init__(self, rows):
+        self.entries: list[Entry] = []
+        self.by_leaf: dict[str, list[int]] = {}
+        self.by_token: dict[str, list[int]] = {}
+        self.by_path_token: dict[str, list[int]] = {}
+        # A file holds many definitions; its path is tokenised once.
+        by_path: dict[str, tuple[set[str], str, str]] = {}
+        # Many definitions share a name (`__init__`, `render`); each name is tokenised once.
+        tokens_of: dict[str, set[str]] = {}
+
+        def tokens(name: str) -> set[str]:
+            if name not in tokens_of:
+                tokens_of[name] = {stem(t) for t in split_identifier(name)}
+            return tokens_of[name]
+
+        for row in rows:
+            if row["kind"] in {"file", "chunk"}:
+                continue
+            segments = row["name"].split(".")
+            if row["path"] not in by_path:
+                pure = PurePosixPath(row["path"])
+                by_path[row["path"]] = ({stem(t) for part in pure.parts[:-1] for t in split_identifier(part)} | {stem(t) for t in split_identifier(pure.stem)},
+                                        stem(pure.stem.lower()), path_class(row["path"]))
+            path_tokens, file_stem, category = by_path[row["path"]]
+            leaf_tokens = tokens(segments[-1])
+            entry = Entry(
+                row["id"], row["path"], row["name"], row["kind"], row["start"], row["end"], segments[-1].lower().lstrip("#"),
+                [segment.lower() for segment in segments[:-1]],
+                set().union(*(tokens(segment) for segment in segments)) if len(segments) > 1 else leaf_tokens,
+                leaf_tokens, path_tokens, file_stem, category,
+            )
+            index = len(self.entries)
+            self.entries.append(entry)
+            self.by_leaf.setdefault(entry.leaf, []).append(index)
+            for token in entry.name_tokens:
+                self.by_token.setdefault(token, []).append(index)
+            for token in entry.path_tokens:
+                self.by_path_token.setdefault(token, []).append(index)
+        self.total = max(1, len(self.entries))
+        self.package = package_name([path for path, (_, _, category) in by_path.items() if category == "code"])
+
+    def idf(self, postings: list[int] | None) -> float:
+        return math.log(1 + self.total / (1 + len(postings or ())))
+
+
+def score(table: SymbolTable, query: Query, body_scores: dict[str, float] | None = None) -> list[tuple[float, Entry, set[str]]]:
+    """Return (score, entry, matched identifier texts) sorted best first."""
+    body_scores = body_scores or {}
+    class_names = {i.leaf.lower() for i in query.identifiers if i.is_class}
+    query_words = set(query.words)
+    candidates: set[int] = set()
+    for identifier in query.identifiers:
+        candidates.update(table.by_leaf.get(identifier.leaf.lower(), ()))
+    for word in query.words:
+        candidates.update(table.by_token.get(word, ()))
+    by_id = {}
+    if body_scores:
+        by_id = {entry.id: index for index, entry in enumerate(table.entries)}
+        candidates.update(by_id[i] for i in body_scores if i in by_id)
+    word_idf = {word: table.idf(table.by_token.get(word, []) + table.by_path_token.get(word, [])) for word in query.words}
+    total_terms = max(1, len(query.words))
+    symbol_words = {word for word in query.words if any(table.entries[i].category == "code" for i in table.by_token.get(word, ()))}
+    # Agents list identifiers most-important first.
+    order_bonus = {identifier.text: 1 + 0.15 * (len(query.identifiers) - position) / len(query.identifiers) for position, identifier in enumerate(query.identifiers)}
+    results: list[tuple[float, Entry, set[str]]] = []
+    for index in candidates:
+        entry = table.entries[index]
+        value = 0.0
+        matched: set[str] = set()
+        owner_tokens = {stem(t) for segment in entry.owner for t in split_identifier(segment)}
+        for identifier in query.identifiers:
+            leaf = identifier.leaf.lower()
+            full = identifier.text.lower()
+            if identifier.called and entry.kind in {"type", "interface"}:
+                continue  # `next()` is a call; a type named Next cannot be called.
+            if entry.name.lower() == full or (identifier.qualifiers and entry.name.lower().endswith("." + full)):
+                value += 6000 * table.idf(table.by_leaf.get(leaf))
+                matched.add(identifier.text)
+            elif entry.leaf == leaf:
+                bonus = 1000 * table.idf(table.by_leaf.get(leaf))
+                # Another identifier in the query names this symbol's class: `BaseForm full_clean`.
+                if class_names & set(entry.owner):
+                    bonus += 2500
+                elif entry.owner and len(split_identifier(entry.owner[-1])) == 1 and stem(entry.owner[-1]) in query_words:
+                    # A plain word names the class: "Hono's Context ... c.json", "Hono ... onError".
+                    bonus += 1200
+                for qualifier in identifier.qualifiers:
+                    q = stem(qualifier)
+                    if qualifier.lower() in entry.owner:
+                        bonus += 1500
+                    elif qualifier[:1].isupper() and q in owner_tokens:
+                        bonus += 300
+                    if qualifier[:1].islower() and not entry.owner:
+                        # `requests.get`: a lowercase qualifier is usually a module, so prefer module-level functions.
+                        bonus += 500
+                    if q == entry.file_stem:
+                        bonus += 300
+                    elif q in entry.path_tokens:
+                        bonus += 100
+                value += bonus * order_bonus[identifier.text]
+                matched.add(identifier.text)
+            if entry.leaf == leaf and len(table.by_leaf.get(leaf, ())) > 1 and entry.name.rsplit(".", 1)[-1].lstrip("#") == identifier.leaf:
+                # Written the way the question writes it: `Session` is the class, `session()` the function.
+                value += 800
+        # Members of a class the query names ("How does CsrfViewMiddleware check ...").
+        if class_names & set(entry.owner):
+            value += 400
+        # The symbol's own name counts more than its class's name: a question about
+        # "URL resolver" should not rank every dunder method of a class equally.
+        leaf_hits = [w for w in query.words if w in entry.leaf_tokens]
+        owner_hits = [w for w in query.words if w not in entry.leaf_tokens and w in entry.name_tokens]
+        path_hits = [w for w in query.words if w not in entry.name_tokens and w in entry.path_tokens]
+        partial = [w for w in query.words if w not in entry.name_tokens and len(w) >= 5 and any(t.startswith(w[:-1]) or w.startswith(t) for t in entry.leaf_tokens if len(t) >= 4)]
+        coverage = (len(leaf_hits) + len(owner_hits) + 0.5 * len(partial)) / total_terms
+        value += sum(60 * word_idf[w] for w in leaf_hits) * (0.5 + coverage)
+        if entry.kind not in {"class", "type", "interface"} and len(entry.leaf_tokens) == 1 and stem(entry.leaf) in query.prose_words and len(table.by_leaf.get(entry.leaf, ())) <= 2:
+            # A plain word that is a function's whole, distinctive name: "How does compose run middleware?"
+            value += 150 * table.idf(table.by_leaf.get(entry.leaf))
+        # A class name counts fully when the method's own name matches too and the file's path does not
+        # already say it: "render the extends tag" is ExtendsNode.render in loader_tags.py, where
+        # "extends" names the class and "render" the method (TemplateTagNode in defaulttags.py adds nothing).
+        value += sum((60 if leaf_hits and w not in entry.path_tokens else 30) * word_idf[w] for w in owner_hits) * (0.5 + coverage)
+        value += sum(30 * word_idf[w] for w in partial) * (0.5 + coverage)
+        # A word that is a file's whole name and no symbol's ("the listurls command") points at that file's code.
+        value += sum((150 if w == entry.file_stem and entry.category == "code" and w not in symbol_words else 12) * word_idf[w] for w in path_hits)
+        value += body_scores.get(entry.id, 0.0)
+        if value <= 0:
+            continue
+        multiplier = {"code": 1.0, "test": 0.2, "doc": 0.25, "example": 0.5, "other": 0.6}[entry.category]
+        if entry.kind in {"type", "interface"} and not query.wants_types:
+            # Type declarations describe shapes, not behaviour.
+            multiplier *= 0.2
+        if entry.category == "test" and query.wants_tests:
+            multiplier = 1.0
+        if entry.category == "doc" and query.wants_docs:
+            multiplier = 1.0
+        results.append((value * multiplier, entry, matched))
+    results.sort(key=lambda item: (-item[0], len(item[1].name), item[1].path, item[1].start))
+    # Subsystem prior: favour the directory where the strongest code matches concentrate.
+    totals: dict[str, float] = {}
+    for value, entry, _ in results[:20]:
+        if entry.category == "code":
+            parent = str(PurePosixPath(entry.path).parent)
+            totals[parent] = totals.get(parent, 0.0) + value
+    if totals:
+        best = max(totals, key=totals.get)
+        results = [(value * (1.3 if str(PurePosixPath(entry.path).parent) == best else 1.0), entry, matched) for value, entry, matched in results]
+        results.sort(key=lambda item: (-item[0], len(item[1].name), item[1].path, item[1].start))
+    return results
+
+
+def pick_seeds(query: Query, ranked: list[tuple[float, Entry, set[str]]], limit: int = 3) -> list[tuple[float, Entry, set[str]]]:
+    """Best match per identifier, then a few strong extras; same-named symbols share a slot."""
+    # Tests and docs are evidence only when the question asks for them, even when one is named
+    # exactly like an identifier in the question (a test called `no_proxy`).
+    asked = {"code", "example", "other"} | ({"test"} if query.wants_tests else set()) | ({"doc"} if query.wants_docs else set())
+    ranked = [item for item in ranked if item[1].category in asked] or ranked
+    seeds: list[tuple[float, Entry, set[str]]] = []
+    used_ids: set[str] = set()
+    for identifier in query.identifiers:
+        # Two spellings of one symbol (`requests.Session`, `Session`) pick it once; the second does not
+        # fall through to the next match (the function `session`).
+        best = next((item for item in ranked if identifier.text in item[2] and item[1].category == "code"), None)
+        best = best or next((item for item in ranked if identifier.text in item[2]), None)
+        if best and best[1].id not in used_ids:
+            seeds.append(best)
+            used_ids.add(best[1].id)
+    if not ranked:
+        return seeds
+    top = ranked[0][0]
+    leaves = {item[1].leaf for item in seeds}
+    words_asked = set(query.words)
+    identifier_leaves = {identifier.leaf.lower() for identifier in query.identifiers}
+    extras = 0
+    owners = lambda entry: entry.name_tokens - entry.leaf_tokens
+    for item in ranked:
+        if extras >= limit or item[0] < top * 0.2:
+            break
+        if item[1].id in used_ids:
+            continue
+        if item[1].leaf in leaves:
+            # Same-named members share a slot, unless the question says whose this one is and the
+            # others are not: "a field's errors ... {{ form.email.errors }}" is BoundField.errors as
+            # well as BaseForm.errors, though `form.` matches BaseForm's name better.
+            same = [other for other in seeds if other[1].leaf == item[1].leaf]
+            taken = set().union(*(owners(other[1]) for other in same))
+            # Or the question names this one's class and not theirs: "render the extends and block
+            # tags" is BlockNode.render as well as ExtendsNode.render. An identifier (`app.fetch`)
+            # names one definition, already picked.
+            named = (owners(item[1]) - taken - item[1].path_tokens) & words_asked if item[1].leaf not in identifier_leaves else set()
+            if item[1].category != "code" or not (named or any(owner in owners(item[1]) - taken and thing in item[1].leaf_tokens for owner, thing in query.possessives)):
+                continue
+        seeds.append(item)
+        used_ids.add(item[1].id)
+        leaves.add(item[1].leaf)
+        extras += 1
+    # A class answers little by itself: add its best-matching members as seeds too,
+    # unless the query already named some of them.
+    words = set(query.words)
+
+    def related_word(token: str) -> bool:
+        return token in words or any(len(token) >= 4 and len(w) >= 5 and (w.startswith(token) or token.startswith(w[:-1])) for w in words)
+
+    fallback: set[str] = set()
+    for value, entry, matched in list(seeds):
+        if entry.kind != "class" or any(other.name.startswith(entry.name + ".") for _, other, _ in seeds):
+            continue
+        members = [item for item in ranked if item[1].path == entry.path and item[1].name.startswith(entry.name + ".") and item[1].id not in used_ids and any(related_word(t) for t in item[1].leaf_tokens)]
+        if not members:
+            # Calling or constructing the class is its behaviour.
+            members = [item for item in ranked if item[1].path == entry.path and item[1].name in (entry.name + ".__call__", entry.name + ".__init__") and item[1].id not in used_ids]
+            members.sort(key=lambda item: not item[1].name.endswith("__call__"))
+            fallback.update(item[1].id for item in members[:1])
+        # The action the question names first leads: "add a route and build its matcher".
+        position = {w: i for i, w in enumerate(query.words)}
+
+        def first_word(item) -> int:
+            hits = [position[w] for w in query.words for t in item[1].leaf_tokens if t == w or (len(t) >= 4 and len(w) >= 5 and (w.startswith(t) or t.startswith(w[:-1])))]
+            return min(hits, default=len(position))
+
+        members = sorted(members[:3], key=first_word)
+        for member in members:
+            seeds.append((value * 0.99, member[1], member[2]))
+            used_ids.add(member[1].id)
+    seeds.sort(key=lambda item: -item[0])
+    # A class whose members are already seeds adds only its header: put it last.
+    classes = [item for item in seeds if item[1].kind == "class" and any(other[1].name.startswith(item[1].name + ".") for other in seeds)]
+    seeds = [item for item in seeds if item not in classes] + classes
+    # Functions explain behaviour better than class headers: lead with a strong function.
+    functions = [item for item in seeds if item[1].kind != "class" and item[1].id not in fallback]
+    if seeds and seeds[0][1].kind == "class" and functions and functions[0][0] >= 0.3 * seeds[0][0]:
+        seeds.remove(functions[0])
+        seeds.insert(0, functions[0])
+    return seeds[:12]

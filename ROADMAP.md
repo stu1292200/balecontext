@@ -12,6 +12,9 @@
 
 ## Before claiming a broadly supported release
 
+- Unreleased source: connection-scoped background polling, consistent read
+  snapshots, per-task benchmark regression checks and optional elapsed timings.
+
 - Run live Claude Code and Codex integration checks; then Gemini CLI and Cursor.
 - Measure ordinary agent workflows against the same workflows with BaleContext.
 - Publish success rates, individual regressions, token totals and run variance.
@@ -23,7 +26,7 @@
 
 - Accurate additional-language parsers and project-aware import resolution.
 - Better test/caller selection, relevance ranking and optional local semantic search.
-- Efficient file-event watching and large-monorepo indexing.
+- Efficient file-event watching to replace polling, and large-monorepo indexing.
 - More verified agent adapters, including the requested Antigravity and Hermes clients.
 - Text extraction for PDFs and office documents, then optional media workflows.
 

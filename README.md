@@ -22,6 +22,10 @@ integration tests in individual agent applications and real-world agent token
 benchmarks are still pending. The 90–95% total-token reduction is a research
 target, not a measured result or guarantee.
 
+The source checkout now also includes automatic background refresh and stricter
+benchmark quality checks. These changes are **unreleased**; the v0.1.0 download
+below refreshes on requests and provides a manually started watcher.
+
 ## Install
 
 Requires Python 3.11 or newer. Install the alpha release with JavaScript/TypeScript support:
@@ -108,16 +112,42 @@ Once connected, try:
 > Use BaleContext to find the session-token validation code and its callers.
 > Cite source locations. Read additional source if the excerpts are incomplete.
 
-Four tools are exposed: `balecontext_context`, `balecontext_related`,
-`balecontext_read`, and `balecontext_status`. They do not edit your source files
-or run shell commands. The local SQLite cache refreshes before retrieval.
+Five tools are exposed: `balecontext_context`, `balecontext_expand`,
+`balecontext_related`, `balecontext_read`, and `balecontext_status`. They do not
+edit your source files or run shell commands. The local SQLite cache refreshes
+before retrieval.
+
+`balecontext_context` returns an evidence pack: a map of the matching
+definitions, the entry point and the definitions it calls in call order (exact
+source with line numbers), and a `COVERAGE: COMPLETE` or `PARTIAL` verdict. The
+first response is capped at 4,000 estimated tokens. Missing pieces are fetched by
+id with `balecontext_expand` instead of re-reading whole files.
+
+### Automatic project updates (unreleased source)
+
+With the current source checkout, connecting an agent starts background indexing
+automatically. While that connection stays open, the server checks for edits,
+new files, renames, deletions and changed exclusions every two seconds. Changed
+files are reparsed; stale source-linked notes are excluded from future retrieval.
+No AI calls are needed for these updates. Each tool request also refreshes before
+reading, so it does not depend on waiting for the next background scan.
+
+Closing the agent connection stops monitoring. Reconnecting catches up with the
+current project. Monitoring updates the local index; exported HTML/JSON files are
+snapshots and require another `balecontext export` to update.
+
+For a large project, set `--watch-interval 10` in the MCP server arguments to
+reduce scanning frequency, or add `--no-watch` to keep only per-request refresh.
+This implementation polls file contents; it is not yet a filesystem-event watcher
+and large-repository performance has not been benchmarked.
 
 ## What you get
 
 | Capability | Behavior |
 |---|---|
 | Incremental index | Content hashes skip unchanged files; removed or newly excluded files disappear from the index. |
-| Focused retrieval | Local full-text search ranks exact source excerpts and expands selected dependency links. |
+| Automatic updates (unreleased) | Background refresh starts with the agent connection; retrieval also refreshes on demand. |
+| Focused retrieval | Symbol-first ranking (exact identifiers and class qualifiers before body text, implementation code before tests and docs), then the entry point's call chain in call order. |
 | Evidence | Every source result includes a path, symbol ID and line range. |
 | Dependency graph | Python AST and optional JS/TS tree-sitter parsing; imports and conservative call resolution. |
 | Cross-session notes | Explicitly saved notes reference file hashes; stale notes are excluded automatically. |
@@ -190,6 +220,11 @@ There is no measured end-to-end savings claim yet. See [the benchmark protocol](
 and the comparison script for provider-reported token totals, setup overhead,
 retries and outcome checks. We will publish actual results rather than infer
 total savings from a smaller context window.
+
+The source comparison script flags each task that passed without BaleContext
+but failed with it, even when another task improves. Optional elapsed-time
+measurements include local setup time; missing measurements are reported as
+unrecorded. See [the first evaluation plan](benchmarks/first-evaluation.md).
 
 ## Development
 

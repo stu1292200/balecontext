@@ -1,0 +1,1 @@
+How does Session.send() handle redirects, and when is the response body read? Cite the relevant source files and line numbers. Do not modify any files.

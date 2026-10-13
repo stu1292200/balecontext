@@ -15,16 +15,18 @@ provider counts it. Cached input is still tokens; do not subtract it from total
 tokens or confuse billing discounts with token reductions. If telemetry is
 unavailable, report that limitation rather than inventing a savings percentage.
 
-Create an external JSON file with this shape (numbers here are illustrative):
+Create an external JSON file with this shape (numbers here are illustrative,
+not BaleContext measurements):
 
 ```json
 {
   "assisted_setup_model_tokens": 0,
+  "assisted_setup_elapsed_seconds": 3,
   "tasks": [
     {
       "id": "fix-session-expiry",
-      "baseline": {"passed": true, "calls": [{"total_tokens": 10000}]},
-      "assisted": {"passed": true, "calls": [{"total_tokens": 8000}]}
+      "baseline": {"passed": true, "elapsed_seconds": 100, "calls": [{"total_tokens": 10000}]},
+      "assisted": {"passed": true, "elapsed_seconds": 80, "calls": [{"total_tokens": 8000}]}
     }
   ]
 }
@@ -35,11 +37,62 @@ python benchmarks/compare_usage.py path/to/measurements.json
 ```
 
 The script includes setup tokens in aggregate savings. It reports both success
-counts and token reductions; a lower success count fails its basic quality gate.
-That gate is necessary but insufficient. Also check every previously passing
-task, regression tests, source citation correctness, and blinded review of the
-patches/answers. Repeat runs to estimate variance. Publish the corpus, tasks,
-model settings, logs with secrets removed, denominators and exclusions.
+counts and token reductions. Any task that passed in the baseline but failed
+with BaleContext fails the basic quality gate, even when a different task
+improves and the total pass counts tie. It lists both regressed and improved
+task IDs. `no-task-regressions` means only that the recorded acceptance checks
+did not regress; it does not prove equivalent or premium quality.
+
+Timing is optional. Either omit all elapsed-time fields, or record
+`elapsed_seconds` on both runs of every task and explicitly provide
+`assisted_setup_elapsed_seconds`. Include indexing/setup time even though local
+indexing uses no model tokens. Measure end-to-end wall-clock duration from
+starting a run to its accepted result or failure, including tool execution and
+retries. If the run finishes without an accepted result, retain it as a failed
+run. Do not mix inference-time estimates with measured wall time. Aggregate
+timings are sums of per-run durations plus setup, not the wall time of parallel
+experiments. Token-only inputs report timing as `not-recorded`.
+
+Also check regression tests, source citation correctness, and blinded review of
+the patches/answers. Repeat runs to estimate variance. Publish the corpus, tasks,
+model settings, logs with secrets removed, denominators and exclusions. See the
+[first evaluation plan](first-evaluation.md) for the proposed task set and release
+criteria. No real agent evaluation has been run yet.
+
+## Paired Claude Code test (uses plan limits)
+
+`benchmarks/claude_pair.py` asks Claude Code the same question with and without
+BaleContext, alternating order, with identical models and read-only tools, and
+records whole-task tokens from Claude Code's own JSON result. Answers are saved
+side by side for a person to judge. Steps: [docs/claude-code-test.md](../docs/claude-code-test.md). Bigger tasks (planted bugs and features that let Claude edit files) are in `benchmarks/tasks/`, with notes on what a correct result looks like.
+
+To see exactly what Claude Code sends to the model, run `py benchmarks\wire_log.py results\wire`
+in one window and `set ANTHROPIC_BASE_URL=http://127.0.0.1:8787` in the window that runs the
+test. Each request body is saved as JSON with the token usage the model reported; the login
+headers are forwarded, not written. `py benchmarks\wire_report.py results\wire` then shows, per
+request, the shape of its messages and the first point where it stops matching the previous
+request, which is what the prompt cache sees.
+
+## Offline relevance check (no model calls)
+
+Before any paid agent comparison, check that retrieval finds the right code:
+
+```sh
+python benchmarks/relevance.py PATH/TO/django benchmarks/relevance/django.json
+python benchmarks/relevance.py PATH/TO/requests benchmarks/relevance/requests.json
+python benchmarks/relevance.py PATH/TO/express benchmarks/relevance/express.json
+python benchmarks/relevance.py PATH/TO/hono benchmarks/relevance/hono.json
+```
+
+Each question file pins a repository commit and lists the definitions a correct
+answer must cite. The Django and requests sets were written before ranking was
+tuned; the Express (JavaScript) and Hono (TypeScript) sets were written before
+any JavaScript or TypeScript change, so their first run measured untuned
+behaviour. A gold item counts as shown when a shown definition covers the same
+lines (aliases such as `res.set = res.header = function ...`). The script reports whether
+the expected entry point is the first source, how much of the gold evidence is
+shown as source or listed by id, the response size, and the coverage verdict.
+Add `--hook` to measure what the Claude Code prompt hook would send instead.
 
 `query --json` reports the size of retrieved text using UTF-8 bytes divided by
 four. This is a rough context-size estimate. Comparing it with the entire corpus

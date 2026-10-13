@@ -1,0 +1,5 @@
+How does Field.clean() run the validators, and where do the ValidationErrors it raises end up on the form? Cite the relevant source files and line numbers. Do not modify any files.
+---
+How does a ModelForm build and validate its model instance during is_valid(), and how does save() then write it? Cite the relevant source files and line numbers. Do not modify any files.
+---
+How are a field's errors rendered in a template, for example {{ form.email.errors }} or form.errors.as_ul()? Cite the relevant source files and line numbers. Do not modify any files.

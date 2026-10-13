@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
+import os
 import sqlite3
 import sys
 import time
@@ -34,14 +36,18 @@ def parser() -> argparse.ArgumentParser:
         "remember": "Save a note tied to current source hashes",
         "watch": "Refresh the index when source files change",
         "doctor": "Check parser and SQLite capabilities",
+        "hook": "Prompt-time hook for a client (reads the client's hook JSON on stdin)",
     }.items():
         sub = commands.add_parser(command, help=help_text)
         sub.add_argument("--root", default=".", help="Project directory (default: current directory)")
         if command != "mcp":
             sub.add_argument("--json", action="store_true", help="Machine-readable JSON output")
-        if command == "query":
+        if command == "mcp":
+            sub.add_argument("--no-watch", action="store_true", help="Disable background refresh; tool calls still refresh before reading")
+            sub.add_argument("--watch-interval", type=float, default=2.0, help="Seconds between background scans (default: 2, minimum: 0.2)")
+        elif command == "query":
             sub.add_argument("query")
-            sub.add_argument("--budget", type=int, default=2000, help="Approximate text tokens (UTF-8 bytes / 4); not exact provider tokens")
+            sub.add_argument("--budget", type=int, default=3000, help="Approximate text tokens (UTF-8 bytes / 4); not exact provider tokens")
         elif command == "related":
             sub.add_argument("name")
             sub.add_argument("--direction", choices=["both", "callers", "dependencies"], default="both")
@@ -58,6 +64,10 @@ def parser() -> argparse.ArgumentParser:
             sub.add_argument("agent", choices=["claude", "codex", "gemini", "cursor", "generic"] if command == "config" else ["claude", "codex", "gemini", "cursor"])
             if command == "install":
                 sub.add_argument("--dry-run", action="store_true")
+                sub.add_argument("--hook", action="store_true", help="Claude Code only: also hand BaleContext evidence to the model on each prompt")
+        elif command == "hook":
+            sub.add_argument("client", choices=["claude"])
+            sub.add_argument("--part", type=int, default=1, help="Which piece of the evidence to print; Claude Code runs the parts side by side")
         elif command == "remember":
             sub.add_argument("text")
             sub.add_argument("--source", action="append", required=True, dest="sources")
@@ -72,10 +82,18 @@ def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
+    if args.command == "hook":
+        from .hook import run_claude
+        code = run_claude(part=args.part)  # Never index a new folder or fail the prompt from a hook.
+        # Claude Code waits for the hook to exit, and adds hook context in the order hooks exit.
+        # Skipping the interpreter's teardown of what retrieval loaded saves a third of a second
+        # and lets part 1 finish before the parts that follow it.
+        sys.stdout.flush()
+        os._exit(code)
     try:
         project = Project(args.root)
         if args.command == "mcp":
-            serve(project)
+            serve(project, watch_interval=None if args.no_watch else args.watch_interval)
             return 0
         if args.command in {"index", "status"}:
             result = project.index()
@@ -100,12 +118,12 @@ def main(argv: list[str] | None = None) -> int:
             print(configuration(project, args.agent))
             return 0
         elif args.command == "install":
-            result = install(project, args.agent, args.dry_run)
+            result = install(project, args.agent, args.dry_run, args.hook)
         elif args.command == "remember":
             result = save_memory(project, args.text, args.sources)
         elif args.command == "watch":
-            if args.interval < 0.2:
-                raise ValueError("Watch interval must be at least 0.2 seconds.")
+            if not math.isfinite(args.interval) or args.interval < 0.2:
+                raise ValueError("Watch interval must be finite and at least 0.2 seconds.")
             while True:
                 result = project.index()
                 if result["changed"] or result["removed"]:

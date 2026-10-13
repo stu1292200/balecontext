@@ -1,0 +1,161 @@
+{
+  "repository": "https://github.com/django/django.git",
+  "commit": "0f34a4c",
+  "note": "Gold lists name the definitions a correct, complete answer must cite. Written from the source before tuning ranking. form-is-valid-prose gained add_error, Field._clean_bound_field, Field.clean, Field.run_validators and BaseModelForm._post_clean after a real Claude Code run showed a correct answer needs them; the earlier code showed 64% of that list and wrongly called itself COMPLETE. request-handling, management-command and extends-block-tags were added later, from gold lists written while studying where harder multi-file questions cost more than a plain agent; do_extends and do_block are in extends-block-tags because a complete answer explains how each tag is parsed into its node.",
+  "questions": [
+    {
+      "id": "form-is-valid-prose",
+      "query": "Explain what happens when Django's form.is_valid() is called. Trace field validation, error handling, and form-wide cleaning. Cite the relevant source files and line numbers. Do not modify any files.",
+      "entry": {"name": "BaseForm.is_valid", "path": "django/forms/forms.py"},
+      "gold": [
+        {"name": "BaseForm.is_valid", "path": "django/forms/forms.py"},
+        {"name": "BaseForm.errors", "path": "django/forms/forms.py"},
+        {"name": "BaseForm.full_clean", "path": "django/forms/forms.py"},
+        {"name": "BaseForm._clean_fields", "path": "django/forms/forms.py"},
+        {"name": "BaseForm._clean_form", "path": "django/forms/forms.py"},
+        {"name": "BaseForm._post_clean", "path": "django/forms/forms.py"},
+        {"name": "BaseForm.add_error", "path": "django/forms/forms.py"},
+        {"name": "Field._clean_bound_field", "path": "django/forms/fields.py"},
+        {"name": "Field.clean", "path": "django/forms/fields.py"},
+        {"name": "Field.run_validators", "path": "django/forms/fields.py"},
+        {"name": "BaseModelForm._post_clean", "path": "django/forms/models.py"}
+      ]
+    },
+    {
+      "id": "form-is-valid-identifiers",
+      "query": "Django BaseForm is_valid errors full_clean _clean_fields _clean_form add_error Field clean _clean_bound_field to_python validate run_validators",
+      "entry": {"name": "BaseForm.is_valid", "path": "django/forms/forms.py"},
+      "gold": [
+        {"name": "BaseForm.is_valid", "path": "django/forms/forms.py"},
+        {"name": "BaseForm.errors", "path": "django/forms/forms.py"},
+        {"name": "BaseForm.full_clean", "path": "django/forms/forms.py"},
+        {"name": "BaseForm._clean_fields", "path": "django/forms/forms.py"},
+        {"name": "BaseForm._clean_form", "path": "django/forms/forms.py"},
+        {"name": "BaseForm.add_error", "path": "django/forms/forms.py"},
+        {"name": "Field.clean", "path": "django/forms/fields.py"},
+        {"name": "Field.run_validators", "path": "django/forms/fields.py"}
+      ]
+    },
+    {
+      "id": "queryset-filter",
+      "query": "How does QuerySet.filter() turn keyword arguments into the SQL WHERE clause?",
+      "entry": {"name": "QuerySet.filter", "path": "django/db/models/query.py"},
+      "gold": [
+        {"name": "QuerySet.filter", "path": "django/db/models/query.py"},
+        {"name": "QuerySet._filter_or_exclude", "path": "django/db/models/query.py"},
+        {"name": "QuerySet._filter_or_exclude_inplace", "path": "django/db/models/query.py"},
+        {"name": "Query.add_q", "path": "django/db/models/sql/query.py"}
+      ]
+    },
+    {
+      "id": "model-save",
+      "query": "What happens when Model.save() is called? How does Django decide between INSERT and UPDATE?",
+      "entry": {"name": "Model.save", "path": "django/db/models/base.py"},
+      "gold": [
+        {"name": "Model.save", "path": "django/db/models/base.py"},
+        {"name": "Model.save_base", "path": "django/db/models/base.py"},
+        {"name": "Model._save_table", "path": "django/db/models/base.py"},
+        {"name": "Model._do_update", "path": "django/db/models/base.py"},
+        {"name": "Model._do_insert", "path": "django/db/models/base.py"}
+      ]
+    },
+    {
+      "id": "url-resolve",
+      "query": "How does the URL resolver match a request path to a view?",
+      "entry": {"name": "URLResolver.resolve", "path": "django/urls/resolvers.py"},
+      "gold": [
+        {"name": "URLResolver.resolve", "path": "django/urls/resolvers.py"},
+        {"name": "URLPattern.resolve", "path": "django/urls/resolvers.py"}
+      ]
+    },
+    {
+      "id": "csrf-check",
+      "query": "How does CsrfViewMiddleware check the CSRF token on a POST request?",
+      "entry": {"name": "CsrfViewMiddleware.process_view", "path": "django/middleware/csrf.py"},
+      "gold": [
+        {"name": "CsrfViewMiddleware.process_view", "path": "django/middleware/csrf.py"},
+        {"name": "CsrfViewMiddleware._check_token", "path": "django/middleware/csrf.py"}
+      ]
+    },
+    {
+      "id": "auth-authenticate",
+      "query": "How does authenticate() choose and try the authentication backends?",
+      "entry": {"name": "authenticate", "path": "django/contrib/auth/__init__.py"},
+      "gold": [
+        {"name": "authenticate", "path": "django/contrib/auth/__init__.py"},
+        {"name": "_get_compatible_backends", "path": "django/contrib/auth/__init__.py"},
+        {"name": "_get_backends", "path": "django/contrib/auth/__init__.py"}
+      ]
+    },
+    {
+      "id": "template-render",
+      "query": "What happens when Template.render(context) is called?",
+      "entry": {"name": "Template.render", "path": "django/template/base.py"},
+      "gold": [
+        {"name": "Template.render", "path": "django/template/base.py"},
+        {"name": "Template._render", "path": "django/template/base.py"},
+        {"name": "NodeList.render", "path": "django/template/base.py"}
+      ]
+    },
+    {
+      "id": "autodetector-changes",
+      "query": "How does the migration autodetector work out which changes need new migrations?",
+      "entry": {"name": "MigrationAutodetector.changes", "path": "django/db/migrations/autodetector.py"},
+      "gold": [
+        {"name": "MigrationAutodetector.changes", "path": "django/db/migrations/autodetector.py"},
+        {"name": "MigrationAutodetector._detect_changes", "path": "django/db/migrations/autodetector.py"}
+      ]
+    },
+    {
+      "id": "get-object-or-404",
+      "query": "how does get_object_or_404 work",
+      "entry": {"name": "get_object_or_404", "path": "django/shortcuts.py"},
+      "gold": [
+        {"name": "get_object_or_404", "path": "django/shortcuts.py"},
+        {"name": "_get_queryset", "path": "django/shortcuts.py"}
+      ]
+    },
+    {
+      "id": "request-handling",
+      "query": "Trace how Django handles an HTTP request from WSGIHandler.__call__ through the middleware chain and URL resolution to the view, and back to the response. Cite the relevant source files and line numbers. Do not modify any files.",
+      "entry": {"name": "WSGIHandler.__call__", "path": "django/core/handlers/wsgi.py"},
+      "gold": [
+        {"name": "WSGIHandler.__call__", "path": "django/core/handlers/wsgi.py"},
+        {"name": "BaseHandler.get_response", "path": "django/core/handlers/base.py"},
+        {"name": "BaseHandler.load_middleware", "path": "django/core/handlers/base.py"},
+        {"name": "BaseHandler._get_response", "path": "django/core/handlers/base.py"},
+        {"name": "BaseHandler.resolve_request", "path": "django/core/handlers/base.py"},
+        {"name": "convert_exception_to_response", "path": "django/core/handlers/exception.py"},
+        {"name": "URLResolver.resolve", "path": "django/urls/resolvers.py"}
+      ]
+    },
+    {
+      "id": "management-command",
+      "query": "How does Django run a management command such as migrate, from execute_from_command_line to the command's handle() method? Cite the relevant source files and line numbers. Do not modify any files.",
+      "entry": {"name": "execute_from_command_line", "path": "django/core/management/__init__.py"},
+      "gold": [
+        {"name": "execute_from_command_line", "path": "django/core/management/__init__.py"},
+        {"name": "ManagementUtility.execute", "path": "django/core/management/__init__.py"},
+        {"name": "ManagementUtility.fetch_command", "path": "django/core/management/__init__.py"},
+        {"name": "load_command_class", "path": "django/core/management/__init__.py"},
+        {"name": "BaseCommand.run_from_argv", "path": "django/core/management/base.py"},
+        {"name": "BaseCommand.execute", "path": "django/core/management/base.py"},
+        {"name": "Command.handle", "path": "django/core/management/commands/migrate.py"}
+      ]
+    },
+    {
+      "id": "extends-block-tags",
+      "query": "How does Django's template engine render the extends and block tags? Cite the relevant source files and line numbers. Do not modify any files.",
+      "entry": {"name": "ExtendsNode.render", "path": "django/template/loader_tags.py"},
+      "gold": [
+        {"name": "ExtendsNode.render", "path": "django/template/loader_tags.py"},
+        {"name": "ExtendsNode.get_parent", "path": "django/template/loader_tags.py"},
+        {"name": "BlockNode.render", "path": "django/template/loader_tags.py"},
+        {"name": "BlockContext.add_blocks", "path": "django/template/loader_tags.py"},
+        {"name": "BlockContext.pop", "path": "django/template/loader_tags.py"},
+        {"name": "do_extends", "path": "django/template/loader_tags.py"},
+        {"name": "do_block", "path": "django/template/loader_tags.py"}
+      ]
+    }
+  ]
+}

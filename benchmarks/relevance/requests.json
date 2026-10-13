@@ -1,0 +1,60 @@
+{
+  "repository": "https://github.com/psf/requests.git",
+  "commit": "611c616",
+  "note": "Gold lists name the definitions a correct, complete answer must cite. Written from the source before tuning ranking.",
+  "questions": [
+    {
+      "id": "session-request-flow",
+      "query": "Trace what happens when Session.request() sends an HTTP request.",
+      "entry": {"name": "Session.request", "path": "src/requests/sessions.py"},
+      "gold": [
+        {"name": "Session.request", "path": "src/requests/sessions.py"},
+        {"name": "Session.send", "path": "src/requests/sessions.py"},
+        {"name": "HTTPAdapter.send", "path": "src/requests/adapters.py"}
+      ]
+    },
+    {
+      "id": "redirects",
+      "query": "How does requests follow redirects?",
+      "entry": {"name": "SessionRedirectMixin.resolve_redirects", "path": "src/requests/sessions.py"},
+      "gold": [
+        {"name": "SessionRedirectMixin.resolve_redirects", "path": "src/requests/sessions.py"},
+        {"name": "SessionRedirectMixin.rebuild_auth", "path": "src/requests/sessions.py"}
+      ]
+    },
+    {
+      "id": "response-json",
+      "query": "How does Response.json() decode the body?",
+      "entry": {"name": "Response.json", "path": "src/requests/models.py"},
+      "gold": [
+        {"name": "Response.json", "path": "src/requests/models.py"}
+      ]
+    },
+    {
+      "id": "prepare-body",
+      "query": "How is the request body encoded in PreparedRequest.prepare_body for json and form data?",
+      "entry": {"name": "PreparedRequest.prepare_body", "path": "src/requests/models.py"},
+      "gold": [
+        {"name": "PreparedRequest.prepare_body", "path": "src/requests/models.py"}
+      ]
+    },
+    {
+      "id": "basic-auth",
+      "query": "How is HTTP basic auth added to a request?",
+      "entry": {"name": "HTTPBasicAuth.__call__", "path": "src/requests/auth.py"},
+      "gold": [
+        {"name": "HTTPBasicAuth.__call__", "path": "src/requests/auth.py"},
+        {"name": "_basic_auth_str", "path": "src/requests/auth.py"}
+      ]
+    },
+    {
+      "id": "api-get",
+      "query": "what does requests.get do",
+      "entry": {"name": "get", "path": "src/requests/api.py"},
+      "gold": [
+        {"name": "get", "path": "src/requests/api.py"},
+        {"name": "request", "path": "src/requests/api.py"}
+      ]
+    }
+  ]
+}

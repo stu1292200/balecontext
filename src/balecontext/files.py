@@ -4,7 +4,9 @@ from __future__ import annotations
 import fnmatch
 import os
 import re
+import stat
 import subprocess
+import time
 from pathlib import Path
 
 EXTENSIONS = {
@@ -68,8 +70,23 @@ def _custom_ignored(relative: str, patterns: list[str]) -> bool:
     )
 
 
+# A stat match is trusted only when the file was read at least this long after its
+# modification time, so edits within the same coarse filesystem tick are not missed.
+RACY_NS = 2_000_000_000
+
+
 def discover(root: Path) -> tuple[dict[str, str], dict[str, int]]:
     """Return eligible UTF-8 text; never follow directory links."""
+    found, _, _, skipped = scan(root)
+    return found, skipped
+
+
+def scan(root: Path, known: dict[str, tuple[int, int, int]] | None = None):
+    """Like discover, but skips reading files whose size and mtime match `known`.
+
+    Returns (texts of files that were read, unchanged paths, {path: (size, mtime_ns, seen_ns)}, skipped).
+    """
+    known = known or {}
     if not root.is_dir():
         raise ValueError("Workspace must be an existing directory.")
     patterns: list[str] = []
@@ -78,15 +95,19 @@ def discover(root: Path) -> tuple[dict[str, str], dict[str, int]]:
         patterns = [s.strip() for s in ignore.read_text(encoding="utf-8").splitlines() if s.strip() and not s.lstrip().startswith("#")]
     candidates: list[str] = []
     skipped = {"excluded": 0, "unreadable": 0, "secret_content": 0}
-    for directory, folders, names in os.walk(root, followlinks=False):
-        folders[:] = sorted(d for d in folders if d not in SKIP_DIRS and not (Path(directory) / d).is_symlink() and not getattr(Path(directory) / d, "is_junction", lambda: False)())
+    is_junction = getattr(os.path, "isjunction", lambda _: False)
+    base = str(root)
+    for directory, folders, names in os.walk(base, followlinks=False):
+        folders[:] = sorted(d for d in folders if d not in SKIP_DIRS and not os.path.islink(os.path.join(directory, d)) and not is_junction(os.path.join(directory, d)))
+        prefix = os.path.relpath(directory, base).replace(os.sep, "/")
+        prefix = "" if prefix == "." else prefix + "/"
         for name in sorted(names):
-            path = Path(directory) / name
-            relative = path.relative_to(root).as_posix()
-            if path.is_symlink() or _sensitive(path) or _custom_ignored(relative, patterns):
+            relative = prefix + name
+            # String checks first; Path objects are costly across thousands of files.
+            if os.path.islink(os.path.join(directory, name)) or _sensitive(Path(name)) or (patterns and _custom_ignored(relative, patterns)):
                 skipped["excluded"] += 1
                 continue
-            if path.suffix.lower() not in EXTENSIONS and name not in SPECIAL:
+            if os.path.splitext(name)[1].lower() not in EXTENSIONS and name not in SPECIAL:
                 continue
             candidates.append(relative)
     # Preserve nested .gitignore rules, negation and Git's matching semantics.
@@ -104,12 +125,24 @@ def discover(root: Path) -> tuple[dict[str, str], dict[str, int]]:
         except (OSError, subprocess.TimeoutExpired):
             pass
     found: dict[str, str] = {}
+    unchanged: set[str] = set()
+    stats: dict[str, tuple[int, int, int]] = {}
     for relative in candidates:
         try:
-            path = safe_path(root, relative)
-            if path.stat().st_size > MAX_FILE_BYTES:
+            info = os.lstat(os.path.join(root, *relative.split("/")))
+            if stat.S_ISLNK(info.st_mode):
                 skipped["excluded"] += 1
                 continue
+            if info.st_size > MAX_FILE_BYTES:
+                skipped["excluded"] += 1
+                continue
+            previous = known.get(relative)
+            if previous and previous[0] == info.st_size and previous[1] == info.st_mtime_ns and info.st_mtime_ns + RACY_NS <= previous[2]:
+                unchanged.add(relative)
+                stats[relative] = previous
+                continue
+            seen = time.time_ns()
+            path = safe_path(root, relative)
             data = path.read_bytes()
             if b"\0" in data:
                 continue
@@ -118,6 +151,7 @@ def discover(root: Path) -> tuple[dict[str, str], dict[str, int]]:
                 skipped["secret_content"] += 1
                 continue
             found[relative] = text
+            stats[relative] = (info.st_size, info.st_mtime_ns, seen)
         except (OSError, UnicodeError, ValueError):
             skipped["unreadable"] += 1
-    return found, skipped
+    return found, unchanged, stats, skipped

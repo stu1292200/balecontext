@@ -1,0 +1,3 @@
+What would break if I changed what BaseHandler.get_response returns? Cite the relevant source files and line numbers. Do not modify any files.
+---
+Where is WSGIRequest used? Cite the relevant source files and line numbers. Do not modify any files.
