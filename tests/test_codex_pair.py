@@ -38,7 +38,7 @@ while index < len(argv):
         key, value = argv[index + 1].split("=", 1)
         settings[key] = tomllib.loads("v = " + value)["v"]
         index += 2
-    elif word in ("-m", "-C"):
+    elif word in ("-m", "-C", "--disable", "--enable"):
         cwd = argv[index + 1] if word == "-C" else cwd
         index += 2
     elif word.startswith("-") and word != "-":
@@ -68,9 +68,12 @@ with log.open("a", encoding="utf-8") as out:
         used = {k: used[k] + last[k] for k in used}
         out.write(json.dumps({"type": "event_msg", "payload": {"type": "token_count", "info": {"total_token_usage": used, "last_token_usage": last}}}) + "\n")
 state.write_text(json.dumps(used))
+(home / ("settings-" + thread + ".json")).write_text(json.dumps({"settings": settings, "disabled": [argv[i + 1] for i, w in enumerate(argv) if w == "--disable"]}))
 print(json.dumps({"type": "thread.started", "thread_id": thread}))
 if not context:
-    print(json.dumps({"type": "item.completed", "item": {"type": "command_execution", "command": "rg checkout_order " + cwd, "aggregated_output": "shop.py", "exit_code": 0}}))
+    # FAKE_BLOCKED: the shell is refused, as when a sandbox is not set up.
+    blocked = bool(os.environ.get("FAKE_BLOCKED"))
+    print(json.dumps({"type": "item.completed", "item": {"type": "command_execution", "command": "rg checkout_order " + cwd, "aggregated_output": "" if blocked else "shop.py", "exit_code": 1 if blocked else 0}}))
 print(json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": "Answer from " + cwd + " with evidence chars " + str(len(context))}}))
 print(json.dumps({"type": "turn.completed", "usage": used}))
 '''
@@ -135,6 +138,9 @@ class CodexPairTest(unittest.TestCase):
         self.assertNotIn(str(self.checkout), share)
         self.assertNotIn(str(self.base), share)
         self.assertIn("<checkout>", share)
+        # Also as a link, the way Codex writes local paths in answers.
+        from urllib.parse import quote
+        self.assertNotIn(quote(self.checkout.as_posix(), safe="/:"), share)
 
     def test_prompt_arm_writes_the_same_evidence_into_the_question(self):
         data, out = self.run_pair("--arms", "without,prompt")
@@ -150,10 +156,30 @@ class CodexPairTest(unittest.TestCase):
             self.run_pair()
         self.assertIn("AGENTS.md mentions BaleContext", str(stopped.exception))
         (self.checkout / "AGENTS.md").unlink()
-        (self.base / "home" / "config.toml").write_text("[mcp_servers.balecontext]\n", encoding="utf-8")
+        (self.base / "home" / "config.toml").write_text('model = "x"\n[mcp_servers.bale]\ncommand = "py"\nargs = ["-m", "balecontext", "mcp"]\n', encoding="utf-8")
+        with open(self.base / "home" / "config.toml", "a", encoding="utf-8") as config:
+            config.write('[profiles.p]\ndeveloper_instructions = "use balecontext"\n')
         with self.assertRaises(SystemExit) as stopped:
             self.run_pair()
-        self.assertIn("--clean-config", str(stopped.exception))
+        self.assertIn("outside an MCP server entry", str(stopped.exception))
+
+    def test_both_arms_read_only_the_local_folder_with_balecontext_servers_off(self):
+        # Your own config keeps working (a Windows sandbox setting, say); only BaleContext's server is switched off.
+        (self.base / "home" / "config.toml").write_text('[mcp_servers.bale]\ncommand = "py"\nargs = ["-m", "balecontext", "mcp"]\n[mcp_servers.other]\ncommand = "x"\n', encoding="utf-8")
+        self.run_pair()
+        seen = [json.loads(path.read_text(encoding="utf-8")) for path in (self.base / "home").glob("settings-*.json")]
+        self.assertEqual(len(seen), 4)
+        for run in seen:
+            self.assertEqual(run["settings"]["web_search"], "disabled")
+            self.assertEqual(run["settings"]["mcp_servers.bale.enabled"], False)
+            self.assertNotIn("mcp_servers.other.enabled", run["settings"])
+            self.assertEqual(run["disabled"], ["apps"])
+
+    def test_a_plain_run_that_could_not_read_the_folder_stops_the_test(self):
+        self.environment["FAKE_BLOCKED"] = "1"
+        with self.assertRaises(SystemExit) as stopped:
+            self.run_pair()
+        self.assertIn("not a fair", str(stopped.exception))
 
     def test_hook_settings_survive_the_command_line_as_toml(self):
         settings = {"type": "command", "command": r'C:\Program Files\Python\python.exe -m balecontext hook codex', "timeout": 120, "additionalContextLimit": 16000}

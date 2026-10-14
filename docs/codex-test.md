@@ -54,7 +54,11 @@ each setup ("arm"), and repeats that for each run:
   only if your Codex does not run the hook.
 
 The default is `without,hook`. Both arms use the same model, reasoning effort and
-read-only sandbox. Token totals are Codex's own for the whole conversation,
+read-only sandbox, and your own Codex settings (a Windows sandbox setting, say).
+Both run with web search and connectors off, so both answer from the local
+folder: in the first run, plain Codex could not run commands and fetched the
+upstream source from GitHub instead, which is not a fair baseline. The script
+now stops when plain Codex ran no command in the folder that succeeded. Token totals are Codex's own for the whole conversation,
 every model call included (`turn.completed` in `codex exec --json`, checked
 against each call's count in Codex's saved session file). `total` is input
 (cached input included) plus output (reasoning included); `uncached` leaves the
@@ -64,8 +68,8 @@ cached input out. The script never judges answers: they are saved side by side.
    then `codex --version` (0.162 or later) and `codex login status`.
 2. Use a folder with no BaleContext setup in it (no `AGENTS.md`, `.codex/config.toml`
    or `.codex/hooks.json` mentioning BaleContext, here or in `%USERPROFILE%\.codex`).
-   The script stops if it finds one. If only your own `config.toml` mentions it,
-   `--clean-config` runs both arms without that file (your sign-in still works).
+   The script stops if it finds one. A BaleContext MCP server in your own
+   `config.toml` is fine: both arms run with it switched off (`enabled=false`).
 3. From the balecontext folder:
 
    ```

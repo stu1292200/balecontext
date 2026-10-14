@@ -23,7 +23,8 @@ is given: then Codex may edit files (workspace-write sandbox), the checkout must
 git checkout, each run's changes are saved as runN-<arm>.diff and undone before the next
 run. --setup-patch FILE plants a change (a bug to find) before every run; it is undone at
 the end. Nothing is written to your Codex settings: the hook is passed to each hook-arm
-run on the command line.
+run on the command line. Both arms run with web search and connectors off and any
+BaleContext MCP server in your config.toml switched off, so both answer from the folder.
 """
 from __future__ import annotations
 
@@ -37,8 +38,10 @@ import statistics
 import subprocess
 import sys
 import time
+import tomllib
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import quote
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -68,8 +71,19 @@ def find_codex() -> str:
     return codex
 
 
-def refuse_contaminated(checkout: Path, clean_config: bool = False) -> None:
-    """BaleContext set up in the project or in Codex's own settings would leak into the 'without' arm."""
+def own_servers() -> list[str]:
+    """MCP servers in your Codex config.toml that run BaleContext; both arms run with them switched off."""
+    path = codex_home() / "config.toml"
+    try:
+        servers = tomllib.loads(path.read_text(encoding="utf-8")).get("mcp_servers", {}) if path.is_file() else {}
+    except (tomllib.TOMLDecodeError, OSError):
+        return []
+    return [name for name, entry in servers.items() if "balecontext" in (name + json.dumps(entry)).lower()]
+
+
+def refuse_contaminated(checkout: Path) -> None:
+    """BaleContext set up in the project or in Codex's own settings would leak into the 'without' arm.
+    A BaleContext MCP server in your config.toml is not a reason to stop: it is switched off for the test."""
     places = []
     folder = checkout
     top = subprocess.run(["git", "rev-parse", "--show-toplevel"], cwd=checkout, capture_output=True, text=True).stdout.strip()
@@ -79,13 +93,22 @@ def refuse_contaminated(checkout: Path, clean_config: bool = False) -> None:
         if not top or folder == Path(top).resolve() or folder.parent == folder:
             break
         folder = folder.parent
-    places += [codex_home() / name for name in ("hooks.json", "AGENTS.md", "AGENTS.override.md") + (() if clean_config else ("config.toml",))]
+    places += [codex_home() / name for name in ("hooks.json", "AGENTS.md", "AGENTS.override.md")]
     for path in places:
         if path.is_file() and "balecontext" in path.read_text(encoding="utf-8", errors="replace").lower():
-            hint = (" Or add --clean-config, so both arms run without your config.toml (your sign-in still works)."
-                    if path.name == "config.toml" and path.parent == codex_home() else "")
             raise SystemExit(f"{path} mentions BaleContext, so the 'without' run would not be clean. "
-                             f"Remove BaleContext from it for the test (keep a copy) and run again.{hint}")
+                             "Remove BaleContext from it for the test (keep a copy) and run again.")
+    config = codex_home() / "config.toml"
+    if config.is_file():
+        try:
+            settings = tomllib.loads(config.read_text(encoding="utf-8"))
+        except tomllib.TOMLDecodeError as error:
+            raise SystemExit(f"{config} could not be read as TOML ({error}).")
+        for name in own_servers():
+            settings.get("mcp_servers", {}).pop(name, None)
+        if "balecontext" in json.dumps(settings).lower():
+            raise SystemExit(f"{config} mentions BaleContext outside an MCP server entry, so the 'without' run would not be clean. "
+                             "Remove that part for the test (keep a copy) and run again.")
 
 
 def toml_inline(value) -> str:
@@ -113,9 +136,12 @@ def command(codex: str, arm: str, args, resume: str | None = None) -> list[str]:
     line = [codex, "exec"] + (["resume"] if resume else []) + ["--json", "--skip-git-repo-check",
             # Both arms, so any hook of your own runs (or not) the same way in each.
             "--dangerously-bypass-hook-trust",
-            "-c", f'sandbox_mode="{"workspace-write" if args.allow_edits else "read-only"}"', "-c", 'approval_policy="never"']
-    if args.clean_config:
-        line.append("--ignore-user-config")
+            "-c", f'sandbox_mode="{"workspace-write" if args.allow_edits else "read-only"}"', "-c", 'approval_policy="never"',
+            # Both arms answer from the local checkout: no web search and no connectors (a first run
+            # fetched the upstream source from GitHub instead of reading the folder).
+            "-c", 'web_search="disabled"', "--disable", "apps"]
+    for name in own_servers():
+        line += ["-c", f"mcp_servers.{name}.enabled=false"]
     if args.model:
         line += ["-m", args.model]
     if args.effort:
@@ -166,7 +192,7 @@ def invoke(codex: str, arm: str, args, prompt: str, out: Path, name: str, resume
                                encoding="utf-8", errors="replace", cwd=args.checkout, timeout=args.timeout)
     raw = completed.stdout.strip()
     (out / f"{name}.jsonl").write_text(raw + "\n", encoding="utf-8")
-    thread, usage, answers, calls, problems = resume, None, [], [], []
+    thread, usage, answers, calls, problems, reads = resume, None, [], [], [], 0
     for text in raw.splitlines():
         try:
             event = json.loads(text)
@@ -185,6 +211,7 @@ def invoke(codex: str, arm: str, args, prompt: str, out: Path, name: str, resume
                 answers.append(str(item.get("text", "")))
             elif what == "command_execution":
                 calls.append(f"shell {str(item.get('command'))[:300]}")
+                reads += item.get("exit_code") == 0
                 calls.append(f"  -> result {len(str(item.get('aggregated_output') or '')):,} chars, exit {item.get('exit_code')}")
             elif what == "mcp_tool_call":
                 calls.append(f"mcp {item.get('server')}.{item.get('tool')} {json.dumps(item.get('arguments'), ensure_ascii=False)[:300]}")
@@ -200,7 +227,7 @@ def invoke(codex: str, arm: str, args, prompt: str, out: Path, name: str, resume
         raise SystemExit(f"{name} failed; see {out}. First error line: {first.strip()[:300]}")
     # The last message is the answer; earlier ones are progress notes.
     (out / f"{name}.answer.md").write_text(answers[-1] if answers else "", encoding="utf-8")
-    return {"thread": thread, "usage": usage, "calls": calls, "problems": problems, "seconds": time.monotonic() - started}
+    return {"thread": thread, "usage": usage, "calls": calls, "problems": problems, "reads": reads, "seconds": time.monotonic() - started}
 
 
 def evidence(project: Project, question: str, session: dict) -> str:
@@ -227,7 +254,7 @@ def run_arm(codex: str, arm: str, args, prompts: list[str], out: Path, number: i
     before = len(hook_log.read_text(encoding="utf-8").splitlines()) if hook_log.exists() else 0
     names = [f"run{number}-{arm}"] + [f"run{number}-{arm}.followup" + (str(n) if len(prompts) > 2 else "") for n in range(1, len(prompts))]
     project, session = (Project(args.checkout), {}) if arm == "prompt" else (None, None)
-    thread, calls, reported, problems, seconds = None, [], [], [], 0.0
+    thread, calls, reported, problems, seconds, reads = None, [], [], [], 0.0, 0
     for position, (prompt, name) in enumerate(zip(prompts, names)):
         if position:
             calls.append(f"--- follow-up question {position} ---")
@@ -243,6 +270,7 @@ def run_arm(codex: str, arm: str, args, prompts: list[str], out: Path, number: i
         reported.append(result["usage"])
         problems += result["problems"]
         seconds += result["seconds"]
+        reads += result["reads"]
     changed = collect_changes(args, out, names[0])
     session_file = rollout(thread)
     saved = read_rollout(session_file)
@@ -280,6 +308,7 @@ def run_arm(codex: str, arm: str, args, prompts: list[str], out: Path, number: i
         "uncached_tokens": uncached(usage),
         "model_calls": len(saved.get("calls") or []) or None,
         "tool_calls": sum(not c.startswith(("  ->", "---", "[hook]", "[prompt]")) for c in calls),
+        "local_commands_ok": reads,
         "seconds": round(seconds, 1),
         "model": saved.get("model") or args.model,
         "effort": saved.get("effort") or args.effort,
@@ -340,11 +369,15 @@ def summarise(rows: list[dict], arms: list[str], questions: int) -> dict:
 def write_share(out: Path, rows: list[dict], summary: dict, checkout: Path, run: int) -> Path:
     """One Markdown file to share: questions, summary, every run's numbers, and one run's tool calls and answers.
     Local paths are replaced, so it can be posted as it is."""
-    replacements = [(str(checkout), "<checkout>"), (checkout.as_posix(), "<checkout>"), (str(codex_home()), "<codex-home>"), (str(Path.home()), "<home>")]
+    replacements = []
+    for path, name in ((checkout, "<checkout>"), (codex_home(), "<codex-home>"), (Path.home(), "<home>")):
+        # As written, with forward slashes, and as a link (D:/My%20Automation/...).
+        for spelling in (str(path), path.as_posix(), quote(path.as_posix(), safe="/:")):
+            replacements += [(spelling, name), (spelling.replace("\\", "\\\\"), name)]
 
     def clean(text: str) -> str:
         for old, new in replacements:
-            text = text.replace(old, new).replace(old.replace("\\", "\\\\"), new)
+            text = re.sub(re.escape(old), new, text, flags=re.IGNORECASE)
         return text
 
     lines = [f"# Codex paired results {out.name}", "", "## Questions", "", "```", (out / "question.txt").read_text(encoding="utf-8").strip(), "```", "",
@@ -381,7 +414,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--model", help="Same model for both arms (default: your Codex default)")
     parser.add_argument("--effort", help="Same reasoning effort for both arms, such as low, medium or high (default: your Codex default)")
     parser.add_argument("--config", action="append", help="Any other Codex setting for both arms, as KEY=VALUE (passed as -c)")
-    parser.add_argument("--clean-config", action="store_true", help="Run both arms without your ~/.codex/config.toml (--ignore-user-config); sign-in still works")
     parser.add_argument("--arms", default="without,hook", help="Comma-separated arms: without, hook, prompt (default without,hook)")
     parser.add_argument("--timeout", type=int, default=1800, help="Seconds per question")
     parser.add_argument("--same-prompt", action="store_true", help="Send the identical prompt every time (lets later runs reuse earlier runs' cache)")
@@ -398,7 +430,7 @@ def main(argv: list[str] | None = None) -> int:
     if not question or (args.followup_file and not all(followups)):
         raise SystemExit("A question file is empty.")
     codex = find_codex()
-    refuse_contaminated(args.checkout, args.clean_config)
+    refuse_contaminated(args.checkout)
     if args.allow_edits or args.setup_patch:
         refuse_dirty(args.checkout)
         if args.setup_patch:
@@ -410,7 +442,7 @@ def main(argv: list[str] | None = None) -> int:
     print("Indexing the checkout once before the runs (no model calls)...")
     Project(args.checkout).index()
     (out / "question.txt").write_text(question + "\n" + "".join(f"\nFollow-up {n}:\n{text}\n" for n, text in enumerate(followups, 1)), encoding="utf-8")
-    (out / "settings.json").write_text(json.dumps({"arms": arms, "model": args.model, "effort": args.effort, "config": args.config or [], "clean_config": args.clean_config,
+    (out / "settings.json").write_text(json.dumps({"arms": arms, "model": args.model, "effort": args.effort, "config": args.config or [], "balecontext_servers_switched_off": own_servers(),
                                                    "hook": {event: codex_hook_settings(event) for event in CODEX_EVENTS},
                                                    "codex_version": subprocess.run([codex, "--version"], capture_output=True, text=True).stdout.strip()}, indent=2), encoding="utf-8")
     rows = []
@@ -430,6 +462,9 @@ def main(argv: list[str] | None = None) -> int:
                       f"{row['tool_calls']} tool calls, {row['seconds']}s" + (f"; changed {len(row['changed_files'])} file(s)" if "changed_files" in row else ""))
                 if row.get("problems"):
                     print("  Codex reported: " + " | ".join(row["problems"])[:600])
+                if arm == "without" and not args.allow_edits and not row["local_commands_ok"]:
+                    raise SystemExit("Plain Codex ran no command in the folder that succeeded, so it could not read the code and this run is not a fair\n"
+                                     f"baseline. Stopped to save your limits. Its answer and commands are in {out}; tell Claude.")
                 if arm == "hook" and not row["hook_ran"]:
                     raise SystemExit("Codex did not run BaleContext's hook, so this arm would equal 'without'. Stopped to save your limits.\n"
                                      "Run again with --arms without,prompt, which writes the same evidence into the question, and tell Claude.")
