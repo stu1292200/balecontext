@@ -161,11 +161,12 @@ class CodexPairTest(unittest.TestCase):
             config.write('[profiles.p]\ndeveloper_instructions = "use balecontext"\n')
         with self.assertRaises(SystemExit) as stopped:
             self.run_pair()
-        self.assertIn("outside an MCP server entry", str(stopped.exception))
+        self.assertIn("mentions BaleContext under profiles", str(stopped.exception))
 
     def test_both_arms_read_only_the_local_folder_with_balecontext_servers_off(self):
         # Your own config keeps working (a Windows sandbox setting, say); only BaleContext's server is switched off.
-        (self.base / "home" / "config.toml").write_text('[mcp_servers.bale]\ncommand = "py"\nargs = ["-m", "balecontext", "mcp"]\n[mcp_servers.other]\ncommand = "x"\n', encoding="utf-8")
+        (self.base / "home" / "config.toml").write_text('[mcp_servers.bale]\ncommand = "py"\nargs = ["-m", "balecontext", "mcp"]\n[mcp_servers.other]\ncommand = "x"\n'
+                                                        '[projects.\'D:\\Project\\balecontext\']\ntrust_level = "trusted"\n', encoding="utf-8")
         self.run_pair()
         seen = [json.loads(path.read_text(encoding="utf-8")) for path in (self.base / "home").glob("settings-*.json")]
         self.assertEqual(len(seen), 4)

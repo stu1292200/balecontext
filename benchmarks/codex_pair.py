@@ -106,8 +106,14 @@ def refuse_contaminated(checkout: Path) -> None:
             raise SystemExit(f"{config} could not be read as TOML ({error}).")
         for name in own_servers():
             settings.get("mcp_servers", {}).pop(name, None)
-        if "balecontext" in json.dumps(settings).lower():
-            raise SystemExit(f"{config} mentions BaleContext outside an MCP server entry, so the 'without' run would not be clean. "
+        # Folders Codex trusts (such as D:\Project\balecontext) and the trust it saved for reviewed
+        # hooks name paths, not anything the model is given.
+        settings.pop("projects", None)
+        if isinstance(settings.get("hooks"), dict):
+            settings["hooks"].pop("state", None)
+        found = [key for key, value in settings.items() if "balecontext" in json.dumps({key: value}).lower()]
+        if found:
+            raise SystemExit(f"{config} mentions BaleContext under {', '.join(found)}, so the 'without' run would not be clean. "
                              "Remove that part for the test (keep a copy) and run again.")
 
 
