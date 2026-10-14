@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -70,6 +71,73 @@ def hook_config() -> dict:
     return {"hooks": {event: [{"hooks": [hook_settings(part) for part in parts]}] for event, parts in HOOK_PARTS.items()}}
 
 
+# Codex keeps about 2,500 tokens of a hook's context unless the hook allows more, and cuts the
+# middle out of anything longer. The largest pack with all its parts is about 45,000 characters
+# (about 11,000 tokens), so one Codex hook carries all of it.
+CODEX_CONTEXT_LIMIT = 16000
+CODEX_EVENTS = ("UserPromptSubmit", "PreCompact")
+
+
+def _command_word(path: str) -> str:
+    """A program path as one word in the shell Codex runs a hook command in (sh, cmd or PowerShell)."""
+    if not re.search(r"[\s\"'&|<>^%;()$`]", path):
+        return path
+    if os.name == "nt":
+        # The short 8.3 form has no spaces, so it needs no quotes in cmd or PowerShell.
+        try:
+            import ctypes
+
+            buffer = ctypes.create_unicode_buffer(32768)
+            if ctypes.windll.kernel32.GetShortPathNameW(path, buffer, len(buffer)) and not re.search(r"\s", buffer.value):
+                return buffer.value
+        except (AttributeError, OSError):
+            pass
+    return '"' + path.replace('"', '\\"') + '"'
+
+
+def codex_hook_settings(event: str = "UserPromptSubmit") -> dict:
+    """Codex hook entry: one command string (Codex has no separate arguments), with room for the
+    whole pack on a prompt. PreCompact adds no context, so it gets no limit."""
+    entry = {"type": "command", "command": f"{_command_word(sys.executable)} -m balecontext hook codex", "timeout": HOOK_TIMEOUT}
+    return entry | ({"additionalContextLimit": CODEX_CONTEXT_LIMIT} if event == "UserPromptSubmit" else {})
+
+
+def codex_hook_config() -> dict:
+    return {"hooks": {event: [{"hooks": [codex_hook_settings(event)]}] for event in CODEX_EVENTS}}
+
+
+def _is_codex_hook(entry) -> bool:
+    return isinstance(entry, dict) and str(entry.get("command", "")).endswith("-m balecontext hook codex")
+
+
+def _install_codex_hook(project: Project, dry_run: bool) -> list[str]:
+    path = safe_path(project.root, ".codex/hooks.json")
+    original = path.read_text(encoding="utf-8") if path.exists() else ""
+    settings = json.loads(original) if original.strip() else {}
+    if not isinstance(settings, dict) or not isinstance(settings.get("hooks", {}), dict):
+        raise ValueError(".codex/hooks.json must contain an object of hooks.")
+    changed = False
+    for event in CODEX_EVENTS:
+        groups = settings.setdefault("hooks", {}).setdefault(event, [])
+        if not isinstance(groups, list):
+            raise ValueError(f"{event} hooks must be a list.")
+        entries = [h for g in groups if isinstance(g, dict) and isinstance(g.get("hooks"), list) for h in g["hooks"]]
+        ours = [h for h in entries if _is_codex_hook(h)]
+        for entry in ours:
+            for key, value in codex_hook_settings(event).items():
+                if key != "command" and entry.get(key) != value:
+                    entry[key] = value
+                    changed = True
+        if not ours:
+            groups.append({"hooks": [codex_hook_settings(event)]})
+            changed = True
+    if not changed:
+        return []
+    if not dry_run:
+        _write(path, json.dumps(settings, indent=2, ensure_ascii=False) + "\n")
+    return [".codex/hooks.json"]
+
+
 def _hook_part(entry) -> int | None:
     """Which part of BaleContext's prompt hook a settings entry runs, or None for any other hook."""
     args = entry.get("args") if isinstance(entry, dict) else None
@@ -112,8 +180,8 @@ def _install_hook(project: Project, dry_run: bool) -> list[str]:
 
 
 def install(project: Project, agent: str, dry_run: bool = False, hook: bool = False) -> dict:
-    if hook and agent != "claude":
-        raise ValueError("The prompt hook is available for Claude Code only. No configuration was changed.")
+    if hook and agent not in ("claude", "codex"):
+        raise ValueError("The prompt hook is available for Claude Code and Codex only. No configuration was changed.")
     destinations = {"claude": (".mcp.json", "CLAUDE.md"), "codex": (".codex/config.toml", "AGENTS.md"), "gemini": (".gemini/settings.json", "GEMINI.md"), "cursor": (".cursor/mcp.json", "AGENTS.md")}
     if agent not in destinations:
         raise ValueError("Use claude, codex, gemini, or cursor. Other clients can use the config command.")
@@ -150,5 +218,5 @@ def install(project: Project, agent: str, dry_run: bool = False, hook: bool = Fa
             if not dry_run:
                 _write(path, content)
     if hook:
-        changes += _install_hook(project, dry_run)
+        changes += _install_codex_hook(project, dry_run) if agent == "codex" else _install_hook(project, dry_run)
     return {"agent": agent, "dry_run": dry_run, "changed": changes, "config": proposed, "next": "Restart the client, approve its project trust prompt if appropriate, then check its MCP server list. End-to-end client compatibility must be verified in that client."}

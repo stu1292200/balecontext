@@ -563,11 +563,13 @@ def _send_part(root: Path, event: dict, part: int, started: float, stdout) -> in
     return 0
 
 
-def run_claude(stdin=None, stdout=None, part: int = 1) -> int:
+def run_claude(stdin=None, stdout=None, part: int = 1, whole: bool = False) -> int:
     """Read Claude Code's hook input and print additional context. Never blocks the prompt.
 
     Part 1 builds the evidence. Parts 2 and up are the same hook registered again with `--part N`;
     Claude Code runs them alongside part 1, and each prints one piece of what part 1 had no room for.
+    With `whole`, part 1 prints the pack and all its parts together: Codex reads the same hook
+    input and output, and its hook can be given room for all of it (`additionalContextLimit`).
     """
     stdin, stdout = stdin or sys.stdin, stdout or sys.stdout
     started = time.time()
@@ -604,6 +606,8 @@ def run_claude(stdin=None, stdout=None, part: int = 1) -> int:
     except Exception:
         text, response = None, {}
     parts = response.get("parts", []) if text else []
+    if whole and parts:
+        text, parts = "\n\n".join([text] + parts), []
     try:
         if text:
             stdout.write(json.dumps({"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": text}}, ensure_ascii=False))

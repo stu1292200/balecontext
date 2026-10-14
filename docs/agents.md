@@ -6,7 +6,7 @@ agent integration. The status below is the honest v0.1.0 state.
 | Client | Adapter | Automated checks | Live app test |
 |---|---|---|---|
 | Claude Code | Project `.mcp.json` + `CLAUDE.md` | JSON merge, backup, idempotence | Pending |
-| Codex | Project `.codex/config.toml` + `AGENTS.md` | TOML parse, conflict refusal | Pending |
+| Codex | Project `.codex/config.toml` + `AGENTS.md`; `--hook` adds `.codex/hooks.json` | TOML parse, conflict refusal; hook checked with Codex 0.162.1 against a local stand-in model server | Paired test pending |
 | Gemini CLI | Project `.gemini/settings.json` + `GEMINI.md` | Shared JSON adapter | Pending |
 | Cursor | Project `.cursor/mcp.json` + `AGENTS.md` | Shared JSON adapter | Pending |
 | Antigravity | Generic stdio MCP settings | Server protocol tested | Not verified |
@@ -27,7 +27,7 @@ also checks current source before reading. Release v0.1.0 has per-request refres
 and a manual watcher, without automatic connection-scoped polling.
 
 For Claude Code, [claude-code-test.md](claude-code-test.md) covers setup and a
-paired with/without token test.
+paired with/without token test; for Codex, [codex-test.md](codex-test.md).
 
 To verify a client:
 

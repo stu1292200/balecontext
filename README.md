@@ -81,13 +81,15 @@ We have **not measured savings** there yet. Run one installer in your project,
 then restart that agent:
 
 ```sh
-balecontext install codex
+balecontext install codex --hook
 balecontext install gemini
 balecontext install cursor
 ```
 
 These are **configuration adapters**, not claims of completed end-to-end tests
-in every client. See [the compatibility matrix](docs/agents.md).
+in every client. See [the compatibility matrix](docs/agents.md). For Codex,
+`--hook` adds the same prompt hook as for Claude Code; its paired test is in
+[docs/codex-test.md](docs/codex-test.md).
 
 For other clients (including Antigravity, Hermes and Perplexity Computer), inspect
 whether your installed version supports a local stdio MCP server. Print a generic
