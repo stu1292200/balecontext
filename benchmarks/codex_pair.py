@@ -81,6 +81,28 @@ def own_servers() -> list[str]:
     return [name for name, entry in servers.items() if "balecontext" in (name + json.dumps(entry)).lower()]
 
 
+def own_skills(checkout: Path) -> list[tuple[str, Path]]:
+    """Skills you installed for Codex (your own, in Codex's folder, or in the project), such as a
+    code-graph skill. Both arms run with them switched off: plain Codex once read a 70,000-character
+    skill file at the start of every task, which is not part of the question. Codex's built-in skills stay."""
+    top = subprocess.run(["git", "rev-parse", "--show-toplevel"], cwd=checkout, capture_output=True, text=True).stdout.strip()
+    roots, folder = [Path.home() / ".agents" / "skills", codex_home() / "skills"], checkout.resolve()
+    while True:
+        roots += [folder / ".agents" / "skills", folder / ".codex" / "skills"]
+        if not top or folder == Path(top).resolve() or folder.parent == folder:
+            break
+        folder = folder.parent
+    found = {}
+    for root in roots:
+        for path in sorted(root.glob("*/SKILL.md")) if root.is_dir() else []:
+            if path.parent.name.startswith("."):
+                continue
+            head = path.read_text(encoding="utf-8", errors="replace")[:2000]
+            named = re.search(r"(?m)^name:\s*['\"]?([^'\"\n]+?)['\"]?\s*$", head)
+            found.setdefault(path.resolve(), (named.group(1) if named else path.parent.name).strip())
+    return [(name, path) for path, name in found.items()]
+
+
 def refuse_contaminated(checkout: Path) -> None:
     """BaleContext set up in the project or in Codex's own settings would leak into the 'without' arm.
     A BaleContext MCP server in your config.toml is not a reason to stop: it is switched off for the test."""
@@ -148,6 +170,9 @@ def command(codex: str, arm: str, args, resume: str | None = None) -> list[str]:
             "-c", 'web_search="disabled"', "--disable", "apps"]
     for name in own_servers():
         line += ["-c", f"mcp_servers.{name}.enabled=false"]
+    skills = own_skills(args.checkout)
+    if skills:
+        line += ["-c", "skills.config=" + toml_inline([{"path": str(path), "enabled": False} for _, path in skills])]
     if args.model:
         line += ["-m", args.model]
     if args.effort:
@@ -282,6 +307,12 @@ def run_arm(codex: str, arm: str, args, prompts: list[str], out: Path, number: i
     saved = read_rollout(session_file)
     if session_file:
         shutil.copy2(session_file, out / f"run{number}-{arm}.session.jsonl")
+        # Codex lists the skills it offers the model in its instructions, saved in the session file.
+        offered = session_file.read_text(encoding="utf-8", errors="replace")
+        still = [name for name, _ in own_skills(args.checkout) if f"- {name}: " in offered]
+        if still:
+            raise SystemExit(f"{names[0]}: Codex still offered the skill(s) {', '.join(still)} although the test switched them off, "
+                             "so the runs would not be comparable. Your Codex version may handle skills differently; update it and run again.")
     # Codex reports the conversation's running total after each question, so the last report is
     # the whole task. Its session file has every model call's own count: when both are there they
     # must agree, and the per-call sum wins if they do not.
@@ -376,14 +407,19 @@ def write_share(out: Path, rows: list[dict], summary: dict, checkout: Path, run:
     """One Markdown file to share: questions, summary, every run's numbers, and one run's tool calls and answers.
     Local paths are replaced, so it can be posted as it is."""
     replacements = []
-    for path, name in ((checkout, "<checkout>"), (codex_home(), "<codex-home>"), (Path.home(), "<home>")):
+    # The folders above the checkout too: Codex sometimes looks for AGENTS.md there.
+    above = [(parent, "<checkout>" + "/.." * level) for level, parent in enumerate(checkout.parents, 1) if parent != Path(parent.anchor)]
+    for path, name in [(checkout, "<checkout>"), (codex_home(), "<codex-home>"), (Path.home(), "<home>")] + above:
         # As written, with forward slashes, and as a link (D:/My%20Automation/...).
         for spelling in (str(path), path.as_posix(), quote(path.as_posix(), safe="/:")):
             replacements += [(spelling, name), (spelling.replace("\\", "\\\\"), name)]
+    # Longest first, so a folder is never replaced inside a longer path that has its own name.
+    replacements.sort(key=lambda pair: -len(pair[0]))
 
     def clean(text: str) -> str:
         for old, new in replacements:
-            text = re.sub(re.escape(old), new, text, flags=re.IGNORECASE)
+            # Not inside a longer name (a parent such as /tmp must not change /tmpl).
+            text = re.sub(re.escape(old) + r"(?![\w-])", new, text, flags=re.IGNORECASE)
         return text
 
     lines = [f"# Codex paired results {out.name}", "", "## Questions", "", "```", (out / "question.txt").read_text(encoding="utf-8").strip(), "```", "",
@@ -449,6 +485,7 @@ def main(argv: list[str] | None = None) -> int:
     Project(args.checkout).index()
     (out / "question.txt").write_text(question + "\n" + "".join(f"\nFollow-up {n}:\n{text}\n" for n, text in enumerate(followups, 1)), encoding="utf-8")
     (out / "settings.json").write_text(json.dumps({"arms": arms, "model": args.model, "effort": args.effort, "config": args.config or [], "balecontext_servers_switched_off": own_servers(),
+                                                   "skills_switched_off": [name for name, _ in own_skills(args.checkout)],
                                                    "hook": {event: codex_hook_settings(event) for event in CODEX_EVENTS},
                                                    "codex_version": subprocess.run([codex, "--version"], capture_output=True, text=True).stdout.strip()}, indent=2), encoding="utf-8")
     rows = []

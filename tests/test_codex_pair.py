@@ -61,7 +61,13 @@ for group in settings.get("hooks.UserPromptSubmit", []):
 calls = [1000 + (len(prompt) + len(context)) // 4] if context else [1000 + len(prompt) // 4, 3000 + len(prompt) // 4]
 log = home / "sessions" / "2026" / ("rollout-2026-test-" + thread + ".jsonl")
 log.parent.mkdir(parents=True, exist_ok=True)
+# Like Codex, list the skills on offer (yours unless switched off in skills.config) in the session file.
+off = {Path(entry["path"]).resolve() for entry in settings.get("skills.config", []) if entry.get("enabled") is False}
+skills = [path for path in sorted((Path.home() / ".agents" / "skills").glob("*/SKILL.md")) if path.resolve() not in off]
+if os.environ.get("FAKE_IGNORE_SKILL_SETTINGS"):
+    skills = sorted((Path.home() / ".agents" / "skills").glob("*/SKILL.md"))
 with log.open("a", encoding="utf-8") as out:
+    out.write(json.dumps({"type": "response_item", "payload": {"type": "message", "role": "developer", "content": [{"type": "input_text", "text": "".join("- " + path.parent.name + ": a skill (file: " + str(path) + ")\n" for path in skills)}]}}) + "\n")
     out.write(json.dumps({"type": "turn_context", "payload": {"model": settings.get("model", "test-model")}}) + "\n")
     for size in calls:
         last = {"input_tokens": size, "cached_input_tokens": 500, "output_tokens": 100, "reasoning_output_tokens": 40}
@@ -73,7 +79,7 @@ print(json.dumps({"type": "thread.started", "thread_id": thread}))
 if not context:
     # FAKE_BLOCKED: the shell is refused, as when a sandbox is not set up.
     blocked = bool(os.environ.get("FAKE_BLOCKED"))
-    print(json.dumps({"type": "item.completed", "item": {"type": "command_execution", "command": "rg checkout_order " + cwd, "aggregated_output": "" if blocked else "shop.py", "exit_code": 1 if blocked else 0}}))
+    print(json.dumps({"type": "item.completed", "item": {"type": "command_execution", "command": "rg checkout_order " + cwd + " " + str(Path(cwd).parent), "aggregated_output": "" if blocked else "shop.py", "exit_code": 1 if blocked else 0}}))
 print(json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": "Answer from " + cwd + " with evidence chars " + str(len(context))}}))
 print(json.dumps({"type": "turn.completed", "usage": used}))
 '''
@@ -175,6 +181,23 @@ class CodexPairTest(unittest.TestCase):
             self.assertEqual(run["settings"]["mcp_servers.bale.enabled"], False)
             self.assertNotIn("mcp_servers.other.enabled", run["settings"])
             self.assertEqual(run["disabled"], ["apps"])
+
+    def test_your_own_skills_are_switched_off_in_both_arms(self):
+        home = self.base / "user"
+        (home / ".agents" / "skills" / "codegraph").mkdir(parents=True)
+        (home / ".agents" / "skills" / "codegraph" / "SKILL.md").write_text("---\nname: codegraph\ndescription: x\n---\nbody\n", encoding="utf-8")
+        self.environment.update({"HOME": str(home), "USERPROFILE": str(home)})
+        data, out = self.run_pair()
+        seen = [json.loads(path.read_text(encoding="utf-8")) for path in (self.base / "home").glob("settings-*.json")]
+        self.assertEqual(len(seen), 4)
+        for run in seen:
+            self.assertEqual(run["settings"]["skills.config"], [{"path": str((home / ".agents" / "skills" / "codegraph" / "SKILL.md").resolve()), "enabled": False}])
+        self.assertEqual(json.loads((out / "settings.json").read_text(encoding="utf-8"))["skills_switched_off"], ["codegraph"])
+        # A Codex that ignores the setting and still offers the skill stops the test.
+        self.environment["FAKE_IGNORE_SKILL_SETTINGS"] = "1"
+        with self.assertRaises(SystemExit) as stopped:
+            self.run_pair()
+        self.assertIn("still offered the skill(s) codegraph", str(stopped.exception))
 
     def test_a_plain_run_that_could_not_read_the_folder_stops_the_test(self):
         self.environment["FAKE_BLOCKED"] = "1"

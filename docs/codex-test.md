@@ -58,7 +58,10 @@ read-only sandbox, and your own Codex settings (a Windows sandbox setting, say).
 Both run with web search and connectors off, so both answer from the local
 folder: in the first run, plain Codex could not run commands and fetched the
 upstream source from GitHub instead, which is not a fair baseline. The script
-now stops when plain Codex ran no command in the folder that succeeded. Token totals are Codex's own for the whole conversation,
+now stops when plain Codex ran no command in the folder that succeeded. Skills you
+installed yourself (in `%USERPROFILE%\.agents\skills`, Codex's `skills` folder or the
+project) are switched off in both arms too: in one test plain Codex read a 70,000-character
+code-graph skill at the start of every task. Codex's built-in skills stay on. Token totals are Codex's own for the whole conversation,
 every model call included (`turn.completed` in `codex exec --json`, checked
 against each call's count in Codex's saved session file). `total` is input
 (cached input included) plus output (reasoning included); `uncached` leaves the
