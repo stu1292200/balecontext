@@ -74,6 +74,12 @@ headers are forwarded, not written. `py benchmarks\wire_report.py results\wire` 
 request, the shape of its messages and the first point where it stops matching the previous
 request, which is what the prompt cache sees.
 
+## Paired Codex test (uses plan limits)
+
+`benchmarks/codex_pair.py` does the same for Codex CLI: `codex exec --json` once per arm,
+plain and with BaleContext's prompt hook (passed per run with `-c`, nothing written to your
+settings), whole-task tokens from Codex's own counts. Steps: [docs/codex-test.md](../docs/codex-test.md).
+
 ## Offline relevance check (no model calls)
 
 Before any paid agent comparison, check that retrieval finds the right code:

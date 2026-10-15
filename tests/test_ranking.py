@@ -1234,8 +1234,52 @@ class HookTest(unittest.TestCase):
         # An earlier install's shorter time limit is raised too.
         self.assertEqual({h["timeout"] for group in data["hooks"]["UserPromptSubmit"] for h in group["hooks"]}, {HOOK_TIMEOUT})
         with self.assertRaises(ValueError):
-            install(project, "codex", hook=True)
-        self.assertFalse((self.root / ".codex").exists())
+            install(project, "gemini", hook=True)
+        self.assertFalse((self.root / ".gemini").exists())
+
+    def test_codex_installer_adds_one_hook_with_room_for_the_whole_pack(self):
+        import json
+        from balecontext.integrations import CODEX_CONTEXT_LIMIT, HOOK_TIMEOUT, install
+        hooks = self.root / ".codex/hooks.json"
+        hooks.parent.mkdir()
+        mine = {"type": "command", "command": "echo mine"}
+        hooks.write_text(json.dumps({"hooks": {"UserPromptSubmit": [{"hooks": [mine]}]}}), encoding="utf-8")
+        project = Project(self.root)
+        self.assertIn(".codex/hooks.json", install(project, "codex", hook=True)["changed"])
+        self.assertNotIn(".codex/hooks.json", install(project, "codex", hook=True)["changed"])
+        data = json.loads(hooks.read_text(encoding="utf-8"))
+        prompt = [h for group in data["hooks"]["UserPromptSubmit"] for h in group["hooks"]]
+        self.assertEqual(prompt[0], mine)
+        self.assertEqual(len(prompt), 2)
+        # One command string: Codex hooks take no separate arguments, and one hook carries every part.
+        self.assertTrue(prompt[1]["command"].endswith(" -m balecontext hook codex"))
+        self.assertEqual((prompt[1]["timeout"], prompt[1]["additionalContextLimit"]), (HOOK_TIMEOUT, CODEX_CONTEXT_LIMIT))
+        compact = [h for group in data["hooks"]["PreCompact"] for h in group["hooks"]]
+        self.assertEqual(len(compact), 1)
+        self.assertNotIn("additionalContextLimit", compact[0])
+        self.assertIn("balecontext_context", (self.root / "AGENTS.md").read_text(encoding="utf-8"))
+
+    def test_codex_hook_prints_the_pack_and_all_its_parts_at_once(self):
+        import io
+        import json
+        from balecontext import hook
+        helpers = "".join(f"def step_{i}(order):\n" + "".join(f"    order.total += {j}  # adjust the order total\n" for j in range(40)) + "    return order\n\n" for i in range(8))
+        entry = "def checkout_order(order):\n" + "".join(f"    order = step_{i}(order)\n" for i in range(8)) + "    return order\n"
+        (self.root / "shop.py").write_text(helpers + entry, encoding="utf-8")
+        project = Project(self.root)
+        project.index()
+        question = "How does checkout_order work through each step?"
+        text, response = hook.prompt_pack(project, question)
+        self.assertTrue(response["parts"])
+        output = io.StringIO()
+        event = {"prompt": question, "cwd": str(self.root), "session_id": "codex-thread", "hook_event_name": "UserPromptSubmit"}
+        self.assertEqual(hook.run_claude(io.StringIO(json.dumps(event)), output, whole=True), 0)
+        printed = json.loads(output.getvalue())["hookSpecificOutput"]["additionalContext"]
+        self.assertEqual(printed, "\n\n".join([text] + response["parts"]))
+        self.assertIn("order.total += 39  # adjust the order total", printed)
+        log = json.loads((self.root / ".balecontext" / "hook-log.jsonl").read_text(encoding="utf-8").splitlines()[-1])
+        self.assertEqual(log["context_chars"], len(printed))
+        self.assertNotIn("part_chars", log)
 
 
 if __name__ == "__main__":

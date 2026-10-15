@@ -2,6 +2,13 @@
 
 ## Unreleased — ranking and evidence packs
 
+- Codex prompt hook and paired test: `balecontext install codex --hook` adds
+  `.codex/hooks.json`, which runs `balecontext hook codex` on each prompt. Codex (0.162 and
+  later) reads the same hook input and output as Claude Code; the hook allows 16,000 tokens
+  of context (Codex keeps about 2,500 by default and cuts the middle out of longer text), so
+  the whole pack and its parts arrive at once. `benchmarks/codex_pair.py` asks Codex the same
+  questions with and without the hook, with whole-task tokens from Codex's own counts, and
+  writes `share.md` with local paths replaced. Steps: `docs/codex-test.md`.
 - New logo (a sheaf: many stalks tied into one small bundle) in light and dark versions, a
   share image, and a plain-language README. Its quick start now includes `--hook`, which the
   measured savings need, and installs from GitHub because the v0.1.0 download has no hook.

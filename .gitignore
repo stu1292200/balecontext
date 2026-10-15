@@ -16,3 +16,4 @@ dist/
 .gemini/
 .cursor/
 benchmarks/claude-pair-results/
+codex-test/
